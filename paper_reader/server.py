@@ -411,7 +411,7 @@ input[type=file] { display: none; }
   }
 
   var activeTags = [];
-  var sortBy = "added";
+  var sortBy = loadSettings().sortBy || "added";
 
   var SORT_COMPARATORS = {
     added: function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); },
@@ -655,8 +655,11 @@ input[type=file] { display: none; }
   document.getElementById("searchBox").addEventListener("input", function () {
     render(this.value);
   });
-  document.getElementById("sortSelect").addEventListener("change", function () {
+  var sortSelect = document.getElementById("sortSelect");
+  sortSelect.value = sortBy;
+  sortSelect.addEventListener("change", function () {
     sortBy = this.value;
+    saveSettings({ sortBy: sortBy });
     render(document.getElementById("searchBox").value);
   });
 
