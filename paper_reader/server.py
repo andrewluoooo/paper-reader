@@ -83,6 +83,7 @@ def _process_upload(filename: str, data: bytes) -> dict:
         "title": metadata.get("title") or filename,
         "authors": [a["name"] for a in metadata.get("authors", [])],
         "venue": metadata.get("venue", ""),
+        "summary": (metadata.get("abstract") or "").strip()[:320],
         "sourceFilename": filename,
         "addedAt": time.time(),
         "lastOpenedAt": None,
@@ -109,6 +110,7 @@ def _rebuild_paper(entry: dict) -> bool:
     entry["title"] = metadata.get("title") or entry["title"]
     entry["authors"] = [a["name"] for a in metadata.get("authors", [])]
     entry["venue"] = metadata.get("venue", "")
+    entry["summary"] = (metadata.get("abstract") or "").strip()[:320]
     return True
 
 
@@ -212,27 +214,68 @@ HOME_PAGE_HTML = """<!doctype html>
 :root {
   color-scheme: light dark;
   --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8;
-  --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e;
+  --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --sidebar-bg: #f7f5f1;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; }
+  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --sidebar-bg: #1c1b19; }
 }
 :root[data-theme="light"] {
-  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e;
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --sidebar-bg: #f7f5f1;
 }
 :root[data-theme="dark"] {
-  --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60;
+  --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --sidebar-bg: #1c1b19;
 }
 * { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
   font-family: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, "Times New Roman", serif;
 }
-.wrap { max-width: 820px; margin: 0 auto; padding: 7vh 6vw 12vh; }
-.header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1em; }
-h1 { font-size: 2em; margin: 0 0 0.2em; }
-.sub { color: var(--muted); margin: 0 0 2.2em; font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.95em; }
-.tabs-row { display: flex; align-items: flex-end; gap: 1.8em; margin: 2em 0 1.2em; border-bottom: 1px solid var(--rule); }
+.app-shell { display: flex; height: 100vh; overflow: hidden; }
+
+/* ---------------------------------------------------------------- sidebar */
+.sidebar {
+  width: 234px; flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; padding: 1.1em 0.9em; overflow-y: auto;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+}
+.sidebar-top { display: flex; align-items: center; justify-content: space-between; padding: 0 0.3em; margin-bottom: 1.4em; }
+.brand { font-family: Georgia, serif; font-weight: 700; font-size: 1.2em; }
+.sidebar-add-btn { width: 28px; height: 28px; font-size: 1.2em; line-height: 1; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 0.1em; flex: 1; min-height: 0; }
+.nav-item {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  padding: 0.5em 0.6em; border-radius: 7px; font-size: 0.92em; color: var(--fg);
+}
+.nav-item:hover { background: var(--rule); }
+.nav-item-sub { color: var(--muted); font-size: 0.85em; float: right; }
+.nav-section-label {
+  margin: 1.1em 0 0.3em; padding: 0 0.6em; font-size: 0.72em; font-weight: 700; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--muted);
+}
+.nav-tags { display: flex; flex-direction: column; gap: 0.05em; overflow-y: auto; min-height: 0; }
+.nav-tags-empty { padding: 0.4em 0.6em; font-size: 0.82em; color: var(--muted); }
+.nav-tag-item {
+  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  padding: 0.4em 0.6em; border-radius: 7px; font-size: 0.85em; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nav-tag-item:hover { background: var(--rule); color: var(--fg); }
+.nav-tag-item.active { background: var(--accent); color: #fff; }
+.sidebar-bottom { margin-top: 0.8em; padding-top: 0.6em; border-top: 1px solid var(--rule); flex-shrink: 0; }
+.sidebar-footer { padding: 0.6em 0.6em 0.1em; font-size: 0.78em; color: var(--muted); }
+.sidebar-footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
+.sidebar-footer a:hover { color: var(--accent); }
+.footer-sep { color: var(--rule); }
+
+/* --------------------------------------------------------------- main col */
+.main-col { flex: 1; min-width: 0; overflow-y: auto; padding: 2.4em 3.2vw 8vh; }
+.main-topbar {
+  display: flex; align-items: center; gap: 1.8em; border-bottom: 1px solid var(--rule); margin-bottom: 1.3em;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+}
+.topbar-title { font-weight: 700; font-size: 0.95em; padding-bottom: 0.75em; }
+.tabs-row { display: flex; align-items: flex-end; gap: 1.6em; flex: 1; }
 .tab-btn {
   background: none; border: none; padding: 0 0 0.7em; margin-bottom: -1px; cursor: pointer;
   font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.82em; font-weight: 700;
@@ -242,22 +285,14 @@ h1 { font-size: 2em; margin: 0 0 0.2em; }
 .tab-btn:hover { color: var(--fg); }
 .tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
 .icon-btn {
-  flex-shrink: 0; width: 36px; height: 36px; border-radius: 999px; border: 1px solid var(--rule);
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 999px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { background: var(--rule); }
 .icon-btn svg { display: block; }
-.dropzone {
-  border: 2px dashed var(--rule); border-radius: 12px; padding: 3em 2em;
-  text-align: center; color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif;
-  cursor: pointer; margin-bottom: 1.2em; transition: border-color 0.15s, background 0.15s;
-}
-.dropzone.dragover { border-color: var(--accent); background: var(--card-bg); }
-.dropzone strong { color: var(--fg); }
-.dropzone .hint { font-size: 0.82em; margin-top: 0.4em; }
 input[type=file] { display: none; }
-.status { font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.88em; margin-bottom: 1.6em; min-height: 1.3em; }
+.status { font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.88em; margin-bottom: 1em; min-height: 1.3em; }
 .status.error { color: var(--error); }
 .status.loading { color: var(--muted); }
 .spinner {
@@ -266,44 +301,57 @@ input[type=file] { display: none; }
   margin-right: 0.5em; vertical-align: -0.15em;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.search-row { display: flex; gap: 0.6em; margin-bottom: 1em; }
+.search-row { display: flex; gap: 0.6em; margin-bottom: 1.2em; }
+.search-row[hidden] { display: none; }
 .search-row input {
   flex: 1; min-width: 0; padding: 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
   font-size: 0.95em;
 }
 .sort-select {
-  flex-shrink: 0; padding: 0.7em 2.2em 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
+  flex-shrink: 0; padding: 0.55em 2.1em 0.55em 0.9em; border-radius: 8px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
-  font-size: 0.9em; cursor: pointer;
+  font-size: 0.85em; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235b5b5b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 0.9em center; appearance: none; -webkit-appearance: none;
+  background-repeat: no-repeat; background-position: right 0.8em center; appearance: none; -webkit-appearance: none;
 }
 .sort-select:hover { border-color: var(--accent); }
-.tag-filter-row { display: flex; flex-wrap: wrap; gap: 0.5em; margin-bottom: 1.4em; }
-.tag-filter-row:empty { display: none; }
-.tag-chip {
-  border: 1px solid var(--rule); background: var(--card-bg); color: var(--muted);
-  border-radius: 999px; padding: 0.3em 0.85em; font-size: 0.8em;
-  font-family: -apple-system, "Segoe UI", sans-serif; cursor: pointer;
-}
-.tag-chip:hover { border-color: var(--accent); color: var(--fg); }
-.tag-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.paper-list { display: flex; flex-direction: column; gap: 0.7em; }
+.paper-list { display: flex; flex-direction: column; gap: 0.6em; }
 .paper-card {
-  display: flex; flex-direction: column;
-  border: 1px solid var(--rule); border-radius: 10px; padding: 1em 1.2em;
+  display: flex; align-items: flex-start; gap: 0.9em;
+  border: 1px solid var(--rule); border-radius: 10px; padding: 0.85em 1.1em;
   background: var(--card-bg);
 }
 .paper-card:hover { border-color: var(--accent); }
-.paper-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8em; }
-.paper-card-link { display: block; flex: 1; min-width: 0; text-decoration: none; color: inherit; cursor: pointer; }
-.paper-title { font-size: 1.05em; font-weight: 700; margin: 0 0 0.3em; line-height: 1.3; }
-.paper-meta { color: var(--muted); font-size: 0.85em; font-family: -apple-system, "Segoe UI", sans-serif; }
-.paper-tags {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em;
-  margin-top: 0.6em; font-family: -apple-system, "Segoe UI", sans-serif;
+.paper-thumb {
+  flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 1.05em; font-family: -apple-system, "Segoe UI", sans-serif;
 }
+.paper-card-link { display: block; flex: 1; min-width: 0; text-decoration: none; color: inherit; cursor: pointer; }
+.paper-title { font-size: 1.02em; font-weight: 700; margin: 0 0 0.22em; line-height: 1.3; }
+.paper-summary {
+  color: var(--muted); font-size: 0.85em; font-family: -apple-system, "Segoe UI", sans-serif;
+  margin-bottom: 0.3em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.paper-meta {
+  color: var(--muted); font-size: 0.82em; font-family: -apple-system, "Segoe UI", sans-serif;
+  display: flex; align-items: center; gap: 0.35em;
+}
+.paper-meta svg { width: 13px; height: 13px; flex-shrink: 0; }
+.paper-actions { display: flex; align-items: center; flex-shrink: 0; gap: 0.05em; margin-top: -0.15em; }
+.paper-action-btn {
+  border: none; background: none; color: var(--muted); cursor: pointer;
+  padding: 0.4em; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
+}
+.paper-action-btn:hover { color: var(--fg); background: var(--rule); }
+.paper-action-btn.active { color: var(--accent); }
+.paper-action-btn svg { width: 16px; height: 16px; display: block; }
+.paper-delete-btn:hover { color: var(--error); background: rgba(179, 38, 30, 0.1); }
+.empty-state { color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif; text-align: center; padding: 3em 0; }
+
+/* -------------------------------------------------------------- tags UI (info panel) */
+.paper-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em; }
 .paper-tag {
   display: inline-flex; align-items: center; gap: 0.3em;
   background: var(--bg); border: 1px solid var(--rule); border-radius: 999px;
@@ -325,68 +373,121 @@ input[type=file] { display: none; }
   padding: 0.15em 0.6em; font-size: 0.76em; font-family: -apple-system, "Segoe UI", sans-serif;
   width: 8em;
 }
-.paper-actions { display: flex; align-items: center; flex-shrink: 0; gap: 0.1em; margin-top: -0.2em; }
-.paper-action-btn {
-  border: none; background: none; color: var(--muted); cursor: pointer;
-  padding: 0.4em; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
+
+/* --------------------------------------------------------------- info panel */
+.info-panel {
+  width: 300px; flex-shrink: 0; border-left: 1px solid var(--rule); overflow-y: auto;
+  font-family: -apple-system, "Segoe UI", sans-serif;
 }
-.paper-action-btn:hover { color: var(--fg); background: var(--rule); }
-.paper-action-btn.active { color: var(--accent); }
-.paper-action-btn svg { width: 16px; height: 16px; display: block; }
-.paper-delete-btn:hover { color: var(--error); background: rgba(179, 38, 30, 0.1); }
-.empty-state { color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif; text-align: center; padding: 3em 0; }
-.site-footer {
-  margin-top: 3em; padding-top: 1.5em; border-top: 1px solid var(--rule);
-  font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.82em; color: var(--muted);
-  display: flex; align-items: center; gap: 0.6em; flex-wrap: wrap;
+.info-panel[hidden] { display: none; }
+.info-panel-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 1.1em 1.2em; border-bottom: 1px solid var(--rule); font-weight: 700; font-size: 0.9em;
 }
-.site-footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
-.site-footer a:hover { color: var(--accent); }
-.footer-sep { color: var(--rule); }
+.info-panel-top .icon-btn { width: 28px; height: 28px; }
+.info-panel-body { padding: 1.2em; }
+.info-title { font-family: Georgia, serif; font-size: 1.15em; font-weight: 700; margin: 0 0 0.6em; line-height: 1.3; }
+.info-open-link { display: inline-block; color: var(--accent); text-decoration: none; font-size: 0.88em; margin-bottom: 1.2em; }
+.info-open-link:hover { text-decoration: underline; }
+.info-authors-row { display: flex; align-items: center; gap: 0.7em; margin-bottom: 1.3em; }
+.info-avatar {
+  flex-shrink: 0; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 0.95em;
+}
+.info-authors-row div:last-child { font-size: 0.88em; }
+.info-section-label {
+  font-size: 0.72em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 0.5em;
+}
+.info-summary { font-size: 0.88em; line-height: 1.5; margin-bottom: 1.3em; }
+.info-meta-table { margin-bottom: 1.3em; }
+.info-meta-row { display: flex; justify-content: space-between; gap: 0.8em; padding: 0.4em 0; border-bottom: 1px solid var(--rule); font-size: 0.85em; }
+.info-meta-row:last-child { border-bottom: none; }
+.info-meta-label { color: var(--muted); flex-shrink: 0; }
+.info-meta-value { text-align: right; overflow-wrap: anywhere; }
+
+/* ------------------------------------------------------------ drop overlay */
+.drop-overlay {
+  position: fixed; inset: 0; background: rgba(26, 86, 219, 0.08);
+  border: 3px dashed var(--accent); z-index: 999;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+.drop-overlay[hidden] { display: none; }
+.drop-overlay-card {
+  background: var(--card-bg); border: 1px solid var(--rule); border-radius: 14px; padding: 2.2em 3em;
+  text-align: center; font-family: -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.drop-overlay-card strong { display: block; font-size: 1.2em; margin-bottom: 0.4em; color: var(--fg); }
+.drop-overlay-card div { color: var(--muted); font-size: 0.88em; }
+
+@media (max-width: 1000px) { .info-panel { display: none !important; } }
+@media (max-width: 720px) { .sidebar { display: none; } }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="header-row">
-    <div>
-      <h1>Andrew&rsquo;s Paper Library</h1>
-      <p class="sub">Drop a LaTeX source file to parse it into a reader page.</p>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="sidebar-top">
+      <span class="brand">Reader</span>
+      <button type="button" class="icon-btn sidebar-add-btn" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source or saved HTML page)">+</button>
     </div>
-    <button type="button" class="icon-btn" id="themeToggleBtn" aria-label="Toggle theme"></button>
+    <nav class="sidebar-nav">
+      <button type="button" class="nav-item" id="navHome">Home</button>
+      <div class="nav-section-label">Tags</div>
+      <div class="nav-tags" id="navTags"></div>
+    </nav>
+    <div class="sidebar-bottom">
+      <button type="button" class="nav-item" id="navSearchBtn">Search</button>
+      <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
+      <div class="sidebar-footer">
+        <a href="/about">About</a>
+        <span class="footer-sep">&middot;</span>
+        <a href="https://github.com/andrewluoooo/paper-reader">GitHub</a>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main-col">
+    <div class="main-topbar">
+      <div class="topbar-title">Library</div>
+      <div class="tabs-row" role="tablist">
+        <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
+        <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
+        <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
+      </div>
+      <select id="sortSelect" class="sort-select" aria-label="Sort papers by">
+        <option value="added">Most recently added</option>
+        <option value="opened">Most recently opened</option>
+        <option value="title">Title (A&ndash;Z)</option>
+      </select>
+    </div>
+
+    <div class="search-row" id="searchRow" hidden>
+      <input type="text" id="searchBox" placeholder="Search papers by title or author...">
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="paper-list" id="paperList"></div>
+  </main>
+
+  <aside class="info-panel" id="infoPanel" hidden>
+    <div class="info-panel-top">
+      <span>Info</span>
+      <button type="button" class="icon-btn" id="infoCloseBtn" aria-label="Close info panel">&times;</button>
+    </div>
+    <div class="info-panel-body" id="infoPanelBody"></div>
+  </aside>
+</div>
+
+<input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm">
+
+<div class="drop-overlay" id="dropOverlay" hidden>
+  <div class="drop-overlay-card">
+    <strong>Drop to add to your library</strong>
+    <div>.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page</div>
   </div>
-
-  <div class="dropzone" id="dropzone">
-    <div><strong>Drag &amp; drop</strong> a LaTeX source or saved HTML paper page here, or click to browse</div>
-    <div class="hint">.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page (Save Page As&hellip; Webpage, Complete)</div>
-    <input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm">
-  </div>
-  <div class="status" id="status"></div>
-
-  <div class="tabs-row" role="tablist">
-    <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
-    <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
-    <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
-  </div>
-
-  <div class="search-row">
-    <input type="text" id="searchBox" placeholder="Search papers by title or author...">
-    <select id="sortSelect" class="sort-select" aria-label="Sort papers by">
-      <option value="added">Most recently added</option>
-      <option value="opened">Most recently opened</option>
-      <option value="title">Title (A&ndash;Z)</option>
-    </select>
-  </div>
-  <div class="tag-filter-row" id="tagFilterRow"></div>
-
-  <div class="paper-list" id="paperList"></div>
-
-  <footer class="site-footer">
-    <a href="/about">About</a>
-    <span class="footer-sep">&middot;</span>
-    <a href="https://github.com/andrewluoooo/paper-reader">GitHub</a>
-    <span class="footer-sep">&middot;</span>
-    <span>Designed by Andrew Luo and Created with Claude Code</span>
-  </footer>
 </div>
 
 <script>
@@ -408,6 +509,13 @@ input[type=file] { display: none; }
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect>' +
     '<line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+  var INFO_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
+  var BOOK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>' +
+    '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>';
   var STATUS_ACTIONS = [
     { status: "inbox", icon: INBOX_ICON, label: "Move to Inbox" },
     { status: "later", icon: LATER_ICON, label: "Move to Later" },
@@ -418,18 +526,24 @@ input[type=file] { display: none; }
     later: "Nothing saved for later.",
     archive: "Nothing archived yet."
   };
+  var THUMB_GRADIENTS = [
+    ["#f97316", "#ef4444"], ["#8b5cf6", "#6366f1"], ["#06b6d4", "#3b82f6"],
+    ["#f43f5e", "#ec4899"], ["#22c55e", "#0ea5e9"], ["#eab308", "#f97316"],
+    ["#a855f7", "#d946ef"], ["#14b8a6", "#22c55e"]
+  ];
+
+  function hashStr(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return Math.abs(h);
+  }
+  function thumbGradient(seed) {
+    var pair = THUMB_GRADIENTS[hashStr(seed) % THUMB_GRADIENTS.length];
+    return "linear-gradient(135deg, " + pair[0] + ", " + pair[1] + ")";
+  }
 
   var SETTINGS_KEY = "paper_reader_settings";
-  var SVG_OPEN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
-  var THEME_ICONS = {
-    auto: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>',
-    light: SVG_OPEN + '<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>' +
-      '<line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>' +
-      '<line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>' +
-      '<line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
-    dark: SVG_OPEN + '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
-  };
+  var THEME_LABELS = { auto: "Auto", light: "Light", dark: "Dark" };
 
   function loadSettings() {
     try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}"); } catch (e) { return {}; }
@@ -443,12 +557,12 @@ input[type=file] { display: none; }
     var root = document.documentElement;
     if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
     else root.removeAttribute("data-theme");
-    var btn = document.getElementById("themeToggleBtn");
-    if (btn) btn.innerHTML = THEME_ICONS[theme] || THEME_ICONS.auto;
+    var label = document.getElementById("prefsThemeLabel");
+    if (label) label.textContent = THEME_LABELS[theme] || "Auto";
   }
   function initTheme() {
     applyTheme(loadSettings().theme || "auto");
-    var btn = document.getElementById("themeToggleBtn");
+    var btn = document.getElementById("navPrefsBtn");
     if (!btn) return;
     btn.addEventListener("click", function () {
       var cur = loadSettings().theme || "auto";
@@ -466,6 +580,8 @@ input[type=file] { display: none; }
   var activeTags = [];
   var sortBy = loadSettings().sortBy || "added";
   var currentTab = loadSettings().tab || "inbox";
+  var selectedPaper = null;
+  var searchOpen = false;
 
   var SORT_COMPARATORS = {
     added: function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); },
@@ -479,24 +595,32 @@ input[type=file] { display: none; }
     return Object.keys(set).sort(function (a, b) { return a.localeCompare(b); });
   }
 
-  function renderTagFilterRow() {
-    var row = document.getElementById("tagFilterRow");
+  function renderSidebarTags() {
+    var wrap = document.getElementById("navTags");
     var tags = allTags();
     // drop any active filter tags that no longer exist on any paper
     activeTags = activeTags.filter(function (t) { return tags.indexOf(t) !== -1; });
-    row.innerHTML = "";
+    wrap.innerHTML = "";
+    if (!tags.length) {
+      var empty = document.createElement("div");
+      empty.className = "nav-tags-empty";
+      empty.textContent = "No tags yet";
+      wrap.appendChild(empty);
+      return;
+    }
     tags.forEach(function (t) {
-      var chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "tag-chip" + (activeTags.indexOf(t) !== -1 ? " active" : "");
-      chip.textContent = t;
-      chip.addEventListener("click", function () {
+      var item = document.createElement("button");
+      item.type = "button";
+      item.className = "nav-tag-item" + (activeTags.indexOf(t) !== -1 ? " active" : "");
+      item.textContent = t;
+      item.title = t;
+      item.addEventListener("click", function () {
         var idx = activeTags.indexOf(t);
         if (idx === -1) activeTags.push(t); else activeTags.splice(idx, 1);
-        renderTagFilterRow();
+        renderSidebarTags();
         render(document.getElementById("searchBox").value);
       });
-      row.appendChild(chip);
+      wrap.appendChild(item);
     });
   }
 
@@ -513,8 +637,9 @@ input[type=file] { display: none; }
           return;
         }
         p.tags = res.data.tags;
-        renderTagFilterRow();
+        renderSidebarTags();
         render(document.getElementById("searchBox").value);
+        if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
       })
       .catch(function (e) { setStatus("Could not update tags: " + e.message, "error"); });
   }
@@ -533,8 +658,43 @@ input[type=file] { display: none; }
         }
         p.status = res.data.status;
         render(document.getElementById("searchBox").value);
+        if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
       })
       .catch(function (e) { setStatus("Could not move paper: " + e.message, "error"); });
+  }
+
+  function buildTagsEditor(p) {
+    var tagsWrap = document.createElement("div");
+    tagsWrap.className = "paper-tags";
+    (p.tags || []).forEach(function (t) {
+      var pill = document.createElement("span");
+      pill.className = "paper-tag";
+      var label = document.createElement("span");
+      label.textContent = t;
+      var rm = document.createElement("button");
+      rm.type = "button";
+      rm.innerHTML = "&times;";
+      rm.setAttribute("aria-label", "Remove tag " + t);
+      rm.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        updateTags(p, (p.tags || []).filter(function (x) { return x !== t; }));
+      });
+      pill.appendChild(label);
+      pill.appendChild(rm);
+      tagsWrap.appendChild(pill);
+    });
+    var addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "paper-tag-add";
+    addBtn.textContent = "+ tag";
+    addBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      startTagInput(p, tagsWrap, addBtn);
+    });
+    tagsWrap.appendChild(addBtn);
+    return tagsWrap;
   }
 
   function startTagInput(p, tagsWrap, addBtn) {
@@ -547,15 +707,100 @@ input[type=file] { display: none; }
     function commit() {
       var val = input.value.trim();
       if (val) updateTags(p, (p.tags || []).concat([val]));
-      else render(document.getElementById("searchBox").value);
+      else if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
     }
     input.addEventListener("keydown", function (e) {
       e.stopPropagation();
       if (e.key === "Enter") { e.preventDefault(); commit(); }
-      else if (e.key === "Escape") { render(document.getElementById("searchBox").value); }
+      else if (e.key === "Escape") { if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p); }
     });
     input.addEventListener("blur", commit);
     input.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); });
+  }
+
+  function openInfoPanel(p) {
+    selectedPaper = p;
+    document.getElementById("infoPanel").hidden = false;
+    renderInfoPanel(p);
+  }
+  function closeInfoPanel() {
+    selectedPaper = null;
+    document.getElementById("infoPanel").hidden = true;
+  }
+  function renderInfoPanel(p) {
+    var body = document.getElementById("infoPanelBody");
+    body.innerHTML = "";
+
+    var titleEl = document.createElement("div");
+    titleEl.className = "info-title";
+    titleEl.textContent = p.title;
+    body.appendChild(titleEl);
+
+    var openLink = document.createElement("a");
+    openLink.className = "info-open-link";
+    openLink.href = "/library/" + encodeURIComponent(p.id) + ".html";
+    openLink.textContent = "Open paper \\u2192";
+    body.appendChild(openLink);
+
+    if ((p.authors || []).length) {
+      var authorsRow = document.createElement("div");
+      authorsRow.className = "info-authors-row";
+      var avatar = document.createElement("div");
+      avatar.className = "info-avatar";
+      avatar.style.background = thumbGradient(p.id);
+      avatar.textContent = p.title.trim().charAt(0).toUpperCase();
+      var name = document.createElement("div");
+      name.textContent = p.authors.join(", ");
+      authorsRow.appendChild(avatar);
+      authorsRow.appendChild(name);
+      body.appendChild(authorsRow);
+    }
+
+    if (p.summary) {
+      var sumLabel = document.createElement("div");
+      sumLabel.className = "info-section-label";
+      sumLabel.textContent = "Summary";
+      var sumBody = document.createElement("div");
+      sumBody.className = "info-summary";
+      sumBody.textContent = p.summary;
+      body.appendChild(sumLabel);
+      body.appendChild(sumBody);
+    }
+
+    var metaLabel = document.createElement("div");
+    metaLabel.className = "info-section-label";
+    metaLabel.textContent = "Metadata";
+    body.appendChild(metaLabel);
+    var metaTable = document.createElement("div");
+    metaTable.className = "info-meta-table";
+    function metaRow(label, value) {
+      if (!value) return;
+      var row = document.createElement("div");
+      row.className = "info-meta-row";
+      var l = document.createElement("span");
+      l.className = "info-meta-label";
+      l.textContent = label;
+      var v = document.createElement("span");
+      v.className = "info-meta-value";
+      v.textContent = value;
+      row.appendChild(l);
+      row.appendChild(v);
+      metaTable.appendChild(row);
+    }
+    var srcLower = (p.sourceFilename || "").toLowerCase();
+    var typeLabel = (srcLower.slice(-5) === ".html" || srcLower.slice(-4) === ".htm") ? "HTML import" : "LaTeX source";
+    metaRow("Type", typeLabel);
+    metaRow("Venue", p.venue);
+    metaRow("Added", fmtDate(p.addedAt));
+    metaRow("Last opened", p.lastOpenedAt ? fmtDate(p.lastOpenedAt) : "Never");
+    metaRow("Source file", p.sourceFilename);
+    body.appendChild(metaTable);
+
+    var tagsLabel = document.createElement("div");
+    tagsLabel.className = "info-section-label";
+    tagsLabel.textContent = "Tags";
+    body.appendChild(tagsLabel);
+    body.appendChild(buildTagsEditor(p));
   }
 
   function render(filter) {
@@ -576,7 +821,7 @@ input[type=file] { display: none; }
     filtered.sort(SORT_COMPARATORS[sortBy] || SORT_COMPARATORS.added);
     if (!filtered.length) {
       var emptyMsg;
-      if (!papers.length) emptyMsg = "No papers yet \\u2014 drop one above to get started.";
+      if (!papers.length) emptyMsg = "No papers yet \\u2014 drop a LaTeX source or saved HTML paper page anywhere on this page to get started.";
       else if (q || activeTags.length) emptyMsg = "No matching papers.";
       else emptyMsg = TAB_EMPTY_MESSAGES[currentTab] || "Nothing here yet.";
       list.innerHTML = '<div class="empty-state">' + emptyMsg + "</div>";
@@ -587,24 +832,59 @@ input[type=file] { display: none; }
       var card = document.createElement("div");
       card.className = "paper-card";
 
-      var top = document.createElement("div");
-      top.className = "paper-card-top";
+      var thumb = document.createElement("div");
+      thumb.className = "paper-thumb";
+      thumb.style.background = thumbGradient(p.id);
+      thumb.textContent = (p.title || "?").trim().charAt(0).toUpperCase();
+      card.appendChild(thumb);
 
       var a = document.createElement("a");
       a.className = "paper-card-link";
       a.href = "/library/" + encodeURIComponent(p.id) + ".html";
+
       var titleEl = document.createElement("div");
       titleEl.className = "paper-title";
       titleEl.textContent = p.title;
+      a.appendChild(titleEl);
+
+      if (p.summary) {
+        var summaryEl = document.createElement("div");
+        summaryEl.className = "paper-summary";
+        summaryEl.textContent = p.summary;
+        a.appendChild(summaryEl);
+      }
+
       var metaEl = document.createElement("div");
       metaEl.className = "paper-meta";
+      var iconSpan = document.createElement("span");
+      iconSpan.innerHTML = BOOK_ICON;
+      metaEl.appendChild(iconSpan.firstChild);
+      var metaText = document.createElement("span");
       var authors = (p.authors || []).join(", ");
-      metaEl.textContent = (authors ? authors + " \\u2014 " : "") + fmtDate(p.addedAt);
-      a.appendChild(titleEl);
+      metaText.textContent = (authors ? authors + " \\u2022 " : "") + fmtDate(p.addedAt);
+      metaEl.appendChild(metaText);
       a.appendChild(metaEl);
+
+      card.appendChild(a);
 
       var actions = document.createElement("div");
       actions.className = "paper-actions";
+
+      var infoBtn = document.createElement("button");
+      infoBtn.type = "button";
+      infoBtn.className = "paper-action-btn" + (selectedPaper && selectedPaper.id === p.id ? " active" : "");
+      infoBtn.setAttribute("aria-label", "Show info");
+      infoBtn.title = "Show info";
+      infoBtn.innerHTML = INFO_ICON;
+      infoBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
+        else openInfoPanel(p);
+        render(document.getElementById("searchBox").value);
+      });
+      actions.appendChild(infoBtn);
+
       STATUS_ACTIONS.forEach(function (spec) {
         var btn = document.createElement("button");
         btn.type = "button";
@@ -633,42 +913,7 @@ input[type=file] { display: none; }
       });
       actions.appendChild(delBtn);
 
-      top.appendChild(a);
-      top.appendChild(actions);
-      card.appendChild(top);
-
-      var tagsWrap = document.createElement("div");
-      tagsWrap.className = "paper-tags";
-      (p.tags || []).forEach(function (t) {
-        var pill = document.createElement("span");
-        pill.className = "paper-tag";
-        var label = document.createElement("span");
-        label.textContent = t;
-        var rm = document.createElement("button");
-        rm.type = "button";
-        rm.innerHTML = "&times;";
-        rm.setAttribute("aria-label", "Remove tag " + t);
-        rm.addEventListener("click", function (e) {
-          e.preventDefault();
-          e.stopPropagation();
-          updateTags(p, (p.tags || []).filter(function (x) { return x !== t; }));
-        });
-        pill.appendChild(label);
-        pill.appendChild(rm);
-        tagsWrap.appendChild(pill);
-      });
-      var addBtn = document.createElement("button");
-      addBtn.type = "button";
-      addBtn.className = "paper-tag-add";
-      addBtn.textContent = "+ tag";
-      addBtn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        startTagInput(p, tagsWrap, addBtn);
-      });
-      tagsWrap.appendChild(addBtn);
-      card.appendChild(tagsWrap);
-
+      card.appendChild(actions);
       list.appendChild(card);
     });
   }
@@ -682,6 +927,7 @@ input[type=file] { display: none; }
           setStatus("Could not remove paper: " + (res.data.error || "unknown error"), "error");
           return;
         }
+        if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
         loadPapers();
       })
       .catch(function (e) {
@@ -692,7 +938,12 @@ input[type=file] { display: none; }
   function loadPapers() {
     fetch("/api/papers").then(function (r) { return r.json(); }).then(function (data) {
       papers = data;
-      renderTagFilterRow();
+      renderSidebarTags();
+      if (selectedPaper) {
+        var found = papers.filter(function (x) { return x.id === selectedPaper.id; })[0];
+        if (found) { selectedPaper = found; renderInfoPanel(selectedPaper); }
+        else closeInfoPanel();
+      }
       render(document.getElementById("searchBox").value);
     });
   }
@@ -727,27 +978,63 @@ input[type=file] { display: none; }
       });
   }
 
-  var dropzone = document.getElementById("dropzone");
   var fileInput = document.getElementById("fileInput");
-  dropzone.addEventListener("click", function () { fileInput.click(); });
+  document.getElementById("addPaperBtn").addEventListener("click", function () { fileInput.click(); });
   fileInput.addEventListener("change", function () {
     if (fileInput.files[0]) upload(fileInput.files[0]);
     fileInput.value = "";
   });
-  ["dragenter", "dragover"].forEach(function (evt) {
-    dropzone.addEventListener(evt, function (e) { e.preventDefault(); dropzone.classList.add("dragover"); });
+
+  /* whole-page drag & drop upload */
+  var dropOverlay = document.getElementById("dropOverlay");
+  var dragCounter = 0;
+  function hasFiles(e) {
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1);
+  }
+  window.addEventListener("dragenter", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.hidden = false;
   });
-  ["dragleave", "drop"].forEach(function (evt) {
-    dropzone.addEventListener(evt, function (e) { e.preventDefault(); dropzone.classList.remove("dragover"); });
+  window.addEventListener("dragover", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
   });
-  dropzone.addEventListener("drop", function (e) {
+  window.addEventListener("dragleave", function (e) {
+    if (!hasFiles(e)) return;
+    dragCounter--;
+    if (dragCounter <= 0) { dragCounter = 0; dropOverlay.hidden = true; }
+  });
+  window.addEventListener("drop", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.hidden = true;
     var files = e.dataTransfer.files;
     if (files && files[0]) upload(files[0]);
   });
 
-  document.getElementById("searchBox").addEventListener("input", function () {
+  var searchBox = document.getElementById("searchBox");
+  var searchRow = document.getElementById("searchRow");
+  searchBox.addEventListener("input", function () {
     render(this.value);
   });
+  searchBox.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      searchOpen = false;
+      searchRow.hidden = true;
+      searchBox.value = "";
+      render("");
+    }
+  });
+  document.getElementById("navSearchBtn").addEventListener("click", function () {
+    searchOpen = !searchOpen;
+    searchRow.hidden = !searchOpen;
+    if (searchOpen) searchBox.focus();
+    else { searchBox.value = ""; render(""); }
+  });
+
   var sortSelect = document.getElementById("sortSelect");
   sortSelect.value = sortBy;
   sortSelect.addEventListener("change", function () {
@@ -767,10 +1054,29 @@ input[type=file] { display: none; }
       currentTab = btn.dataset.status;
       saveSettings({ tab: currentTab });
       applyActiveTab();
+      closeInfoPanel();
       render(document.getElementById("searchBox").value);
     });
   });
   applyActiveTab();
+
+  document.getElementById("navHome").addEventListener("click", function () {
+    closeInfoPanel();
+    activeTags = [];
+    currentTab = "inbox";
+    saveSettings({ tab: currentTab });
+    applyActiveTab();
+    renderSidebarTags();
+    searchOpen = false;
+    searchRow.hidden = true;
+    searchBox.value = "";
+    render("");
+  });
+
+  document.getElementById("infoCloseBtn").addEventListener("click", closeInfoPanel);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) closeInfoPanel();
+  });
 
   initTheme();
   loadPapers();
