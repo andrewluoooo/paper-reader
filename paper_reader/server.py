@@ -25,7 +25,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .latex_convert import LatexConvertError, convert
+from .html_convert import HtmlConvertError
+from .html_convert import convert as convert_html
+from .latex_convert import LatexConvertError, convert as convert_latex
 from .restyle import restyle
 
 LIBRARY_DIR = Path.home() / ".paper_reader_library"
@@ -36,7 +38,8 @@ INDEX_PATH = LIBRARY_DIR / "index.json"
 # without re-running the slow LaTeX->HTML conversion.
 RAW_DIR = LIBRARY_DIR / "raw"
 
-ALLOWED_UPLOAD_SUFFIXES = (".tex", ".zip", ".tar.gz", ".tgz", ".tar")
+ALLOWED_UPLOAD_SUFFIXES = (".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", ".htm")
+HTML_SOURCE_SUFFIXES = (".html", ".htm")
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
 
 
@@ -62,10 +65,14 @@ def _process_upload(filename: str, data: bytes) -> dict:
     raw_workdir = RAW_DIR / paper_id
     raw_workdir.mkdir(parents=True, exist_ok=True)
 
+    is_html_source = filename.lower().endswith(HTML_SOURCE_SUFFIXES)
     with tempfile.TemporaryDirectory(prefix="paper_reader_upload_") as tmp:
         tmp_path = Path(tmp) / os.path.basename(filename)
         tmp_path.write_bytes(data)
-        raw_html_path = convert(str(tmp_path), str(raw_workdir))
+        if is_html_source:
+            raw_html_path = convert_html(str(tmp_path), str(raw_workdir))
+        else:
+            raw_html_path = convert_latex(str(tmp_path), str(raw_workdir))
 
     html_out, metadata = restyle(raw_html_path, source_name=filename, back_link="/")
     (LIBRARY_DIR / f"{paper_id}.html").write_text(html_out, encoding="utf-8")
@@ -243,9 +250,9 @@ input[type=file] { display: none; }
   </div>
 
   <div class="dropzone" id="dropzone">
-    <div><strong>Drag &amp; drop</strong> a LaTeX file here, or click to browse</div>
-    <div class="hint">.tex, .zip, .tar.gz, .tgz</div>
-    <input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar">
+    <div><strong>Drag &amp; drop</strong> a LaTeX source or saved HTML paper page here, or click to browse</div>
+    <div class="hint">.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page (Save Page As&hellip; Webpage, Complete)</div>
+    <input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm">
   </div>
   <div class="status" id="status"></div>
 
@@ -585,7 +592,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             entry = _process_upload(filename, data)
-        except LatexConvertError as e:
+        except (LatexConvertError, HtmlConvertError) as e:
             self._send_json({"error": str(e)}, 400)
             return
         except Exception as e:  # keep the server alive even if one paper fails to convert

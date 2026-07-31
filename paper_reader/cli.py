@@ -5,21 +5,29 @@ import os
 import sys
 import tempfile
 
-from .latex_convert import LatexConvertError, convert
+from .html_convert import HtmlConvertError
+from .html_convert import convert as convert_html
+from .latex_convert import LatexConvertError, convert as convert_latex
 from .restyle import restyle
+
+HTML_SOURCE_SUFFIXES = (".html", ".htm")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="paper_reader",
         description=(
-            "Convert a LaTeX paper (a .tex file, a project directory, or a source "
-            "tarball/zip, e.g. an arXiv 'Other formats -> Source' download) into a "
-            "single-column, reader-style HTML page."
+            "Convert a research paper into a single-column, reader-style HTML page -- "
+            "either a LaTeX source (a .tex file, a project directory, or a source "
+            "tarball/zip, e.g. an arXiv 'Other formats -> Source' download), or an "
+            "already-rendered HTML paper page saved from a publisher's site (browser "
+            "'Save Page As... Webpage, Complete')."
         ),
     )
     parser.add_argument(
-        "source", nargs="?", help="Path to a .tex file, LaTeX project directory, or source archive"
+        "source",
+        nargs="?",
+        help="Path to a .tex file, LaTeX project directory, source archive, or a saved .html paper page",
     )
     parser.add_argument(
         "-o", "--output", help="Path to write the output HTML file (default: alongside the source)"
@@ -70,12 +78,17 @@ def main(argv=None) -> int:
     stem = os.path.splitext(base)[0]
     out_path = os.path.abspath(args.output) if args.output else os.path.join(os.path.dirname(src), stem + ".html")
 
+    is_html_source = src.lower().endswith(HTML_SOURCE_SUFFIXES)
+
     work_ctx = tempfile.TemporaryDirectory(prefix="paper_reader_")
     workdir = work_ctx.name
     try:
         try:
-            raw_html_path = convert(src, workdir)
-        except LatexConvertError as e:
+            if is_html_source:
+                raw_html_path = convert_html(src, workdir)
+            else:
+                raw_html_path = convert_latex(src, workdir)
+        except (LatexConvertError, HtmlConvertError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
 
