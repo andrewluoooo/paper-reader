@@ -85,6 +85,7 @@ def _process_upload(filename: str, data: bytes) -> dict:
         "sourceFilename": filename,
         "addedAt": time.time(),
         "rawHtmlPath": raw_html_path,
+        "tags": [],
     }
     items = _load_index()
     items.insert(0, entry)
@@ -123,6 +124,28 @@ def _delete_paper(paper_id: str) -> bool:
     if raw_path.is_dir():
         shutil.rmtree(raw_path)
     return True
+
+
+def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
+    """Replace a paper's tag list. Tags are normalized (trimmed, empty
+    ones dropped, de-duplicated case-insensitively but keeping first
+    casing seen) and sorted. Returns the updated entry, or None if no
+    paper with that id exists."""
+    items = _load_index()
+    entry = next((e for e in items if e["id"] == paper_id), None)
+    if entry is None:
+        return None
+    seen = {}
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        t = t.strip()
+        if not t:
+            continue
+        seen.setdefault(t.lower(), t)
+    entry["tags"] = sorted(seen.values(), key=str.lower)
+    _save_index(items)
+    return entry
 
 
 def rebuild_library(quiet: bool = False) -> tuple[int, int]:
@@ -209,18 +232,53 @@ input[type=file] { display: none; }
 .search-row input {
   width: 100%; padding: 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
-  font-size: 0.95em; margin-bottom: 1.4em;
+  font-size: 0.95em; margin-bottom: 1em;
 }
+.tag-filter-row { display: flex; flex-wrap: wrap; gap: 0.5em; margin-bottom: 1.4em; }
+.tag-filter-row:empty { display: none; }
+.tag-chip {
+  border: 1px solid var(--rule); background: var(--card-bg); color: var(--muted);
+  border-radius: 999px; padding: 0.3em 0.85em; font-size: 0.8em;
+  font-family: -apple-system, "Segoe UI", sans-serif; cursor: pointer;
+}
+.tag-chip:hover { border-color: var(--accent); color: var(--fg); }
+.tag-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .paper-list { display: flex; flex-direction: column; gap: 0.7em; }
 .paper-card {
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8em;
+  display: flex; flex-direction: column;
   border: 1px solid var(--rule); border-radius: 10px; padding: 1em 1.2em;
   background: var(--card-bg);
 }
 .paper-card:hover { border-color: var(--accent); }
+.paper-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8em; }
 .paper-card-link { display: block; flex: 1; min-width: 0; text-decoration: none; color: inherit; cursor: pointer; }
 .paper-title { font-size: 1.05em; font-weight: 700; margin: 0 0 0.3em; line-height: 1.3; }
 .paper-meta { color: var(--muted); font-size: 0.85em; font-family: -apple-system, "Segoe UI", sans-serif; }
+.paper-tags {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4em;
+  margin-top: 0.6em; font-family: -apple-system, "Segoe UI", sans-serif;
+}
+.paper-tag {
+  display: inline-flex; align-items: center; gap: 0.3em;
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 999px;
+  padding: 0.15em 0.6em; font-size: 0.76em; color: var(--muted);
+}
+.paper-tag button {
+  border: none; background: none; color: var(--muted); cursor: pointer; padding: 0;
+  display: inline-flex; line-height: 1; font-size: 1em;
+}
+.paper-tag button:hover { color: var(--error); }
+.paper-tag-add {
+  border: 1px dashed var(--rule); background: none; color: var(--muted); cursor: pointer;
+  border-radius: 999px; padding: 0.15em 0.6em; font-size: 0.76em;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+}
+.paper-tag-add:hover { border-color: var(--accent); color: var(--fg); }
+.paper-tag-input {
+  border: 1px solid var(--rule); background: var(--bg); color: var(--fg); border-radius: 999px;
+  padding: 0.15em 0.6em; font-size: 0.76em; font-family: -apple-system, "Segoe UI", sans-serif;
+  width: 8em;
+}
 .paper-delete-btn {
   flex-shrink: 0; border: none; background: none; color: var(--muted); cursor: pointer;
   padding: 0.4em; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
@@ -259,6 +317,7 @@ input[type=file] { display: none; }
   <div class="search-row">
     <input type="text" id="searchBox" placeholder="Search papers by title or author...">
   </div>
+  <div class="tag-filter-row" id="tagFilterRow"></div>
 
   <div class="paper-list" id="paperList"></div>
 
@@ -324,13 +383,88 @@ input[type=file] { display: none; }
     return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }
 
+  var activeTags = [];
+
+  function allTags() {
+    var set = {};
+    papers.forEach(function (p) { (p.tags || []).forEach(function (t) { set[t] = true; }); });
+    return Object.keys(set).sort(function (a, b) { return a.localeCompare(b); });
+  }
+
+  function renderTagFilterRow() {
+    var row = document.getElementById("tagFilterRow");
+    var tags = allTags();
+    // drop any active filter tags that no longer exist on any paper
+    activeTags = activeTags.filter(function (t) { return tags.indexOf(t) !== -1; });
+    row.innerHTML = "";
+    tags.forEach(function (t) {
+      var chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "tag-chip" + (activeTags.indexOf(t) !== -1 ? " active" : "");
+      chip.textContent = t;
+      chip.addEventListener("click", function () {
+        var idx = activeTags.indexOf(t);
+        if (idx === -1) activeTags.push(t); else activeTags.splice(idx, 1);
+        renderTagFilterRow();
+        render(document.getElementById("searchBox").value);
+      });
+      row.appendChild(chip);
+    });
+  }
+
+  function updateTags(p, newTags) {
+    fetch("/api/papers/" + encodeURIComponent(p.id) + "/tags", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: newTags })
+    })
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setStatus("Could not update tags: " + (res.data.error || "unknown error"), "error");
+          return;
+        }
+        p.tags = res.data.tags;
+        renderTagFilterRow();
+        render(document.getElementById("searchBox").value);
+      })
+      .catch(function (e) { setStatus("Could not update tags: " + e.message, "error"); });
+  }
+
+  function startTagInput(p, tagsWrap, addBtn) {
+    var input = document.createElement("input");
+    input.type = "text";
+    input.className = "paper-tag-input";
+    input.placeholder = "tag name";
+    addBtn.replaceWith(input);
+    input.focus();
+    function commit() {
+      var val = input.value.trim();
+      if (val) updateTags(p, (p.tags || []).concat([val]));
+      else render(document.getElementById("searchBox").value);
+    }
+    input.addEventListener("keydown", function (e) {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      else if (e.key === "Escape") { render(document.getElementById("searchBox").value); }
+    });
+    input.addEventListener("blur", commit);
+    input.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); });
+  }
+
   function render(filter) {
     var list = document.getElementById("paperList");
     var q = (filter || "").trim().toLowerCase();
     var filtered = papers.filter(function (p) {
-      if (!q) return true;
-      var hay = (p.title + " " + (p.authors || []).join(" ") + " " + (p.venue || "")).toLowerCase();
-      return hay.indexOf(q) !== -1;
+      if (q) {
+        var hay = (p.title + " " + (p.authors || []).join(" ") + " " + (p.venue || "")).toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
+      if (activeTags.length) {
+        var ptags = (p.tags || []).map(function (t) { return t.toLowerCase(); });
+        if (!activeTags.every(function (t) { return ptags.indexOf(t.toLowerCase()) !== -1; })) return false;
+      }
+      return true;
     });
     if (!filtered.length) {
       list.innerHTML = '<div class="empty-state">' +
@@ -342,6 +476,9 @@ input[type=file] { display: none; }
     filtered.forEach(function (p) {
       var card = document.createElement("div");
       card.className = "paper-card";
+
+      var top = document.createElement("div");
+      top.className = "paper-card-top";
 
       var a = document.createElement("a");
       a.className = "paper-card-link";
@@ -368,8 +505,42 @@ input[type=file] { display: none; }
         removePaper(p);
       });
 
-      card.appendChild(a);
-      card.appendChild(delBtn);
+      top.appendChild(a);
+      top.appendChild(delBtn);
+      card.appendChild(top);
+
+      var tagsWrap = document.createElement("div");
+      tagsWrap.className = "paper-tags";
+      (p.tags || []).forEach(function (t) {
+        var pill = document.createElement("span");
+        pill.className = "paper-tag";
+        var label = document.createElement("span");
+        label.textContent = t;
+        var rm = document.createElement("button");
+        rm.type = "button";
+        rm.innerHTML = "&times;";
+        rm.setAttribute("aria-label", "Remove tag " + t);
+        rm.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          updateTags(p, (p.tags || []).filter(function (x) { return x !== t; }));
+        });
+        pill.appendChild(label);
+        pill.appendChild(rm);
+        tagsWrap.appendChild(pill);
+      });
+      var addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "paper-tag-add";
+      addBtn.textContent = "+ tag";
+      addBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        startTagInput(p, tagsWrap, addBtn);
+      });
+      tagsWrap.appendChild(addBtn);
+      card.appendChild(tagsWrap);
+
       list.appendChild(card);
     });
   }
@@ -393,6 +564,7 @@ input[type=file] { display: none; }
   function loadPapers() {
     fetch("/api/papers").then(function (r) { return r.json(); }).then(function (data) {
       papers = data;
+      renderTagFilterRow();
       render(document.getElementById("searchBox").value);
     });
   }
@@ -560,6 +732,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             else:
                 self._send_json({"error": "not found"}, 404)
+        else:
+            self._send_json({"error": "not found"}, 404)
+
+    def do_PUT(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path.startswith("/api/papers/") and parsed.path.endswith("/tags"):
+            paper_id = os.path.basename(parsed.path[len("/api/papers/") : -len("/tags")])
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json({"error": "invalid JSON body"}, 400)
+                return
+            tags = body.get("tags")
+            if not isinstance(tags, list):
+                self._send_json({"error": "expected {\"tags\": [...]}"}, 400)
+                return
+            entry = _set_paper_tags(paper_id, tags)
+            if entry is None:
+                self._send_json({"error": "not found"}, 404)
+            else:
+                self._send_json(entry)
         else:
             self._send_json({"error": "not found"}, 404)
 

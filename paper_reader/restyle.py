@@ -2354,6 +2354,41 @@ READER_SCRIPT = """
     window.addEventListener("resize", scheduleRefresh);
   }
 
+  /* ------------------------------------------------------- reading position */
+  // Remembers how far down the page you were and scrolls back there next
+  // time this paper is opened, keyed per paper the same way highlights
+  // are (by document title, in localStorage -- so it's per-browser, same
+  // scope as highlights/notes).
+  function initReadingPosition() {
+    var key = "paper_reader_scroll::" + encodeURIComponent(document.title || location.pathname);
+
+    function restore() {
+      if (location.hash) return; // an explicit deep link wins over the saved position
+      var saved = parseInt(localStorage.getItem(key) || "0", 10);
+      if (!saved || saved <= 0) return;
+      window.scrollTo(0, saved);
+    }
+    // Wait for the "load" event (registered after FIT_SCRIPT's own "load"
+    // listener, so it runs after that -- see FIT_SCRIPT above): table and
+    // figure fit-to-width scaling can change the page's total height, and
+    // restoring scroll before that settles would land in the wrong spot.
+    if (document.readyState === "complete") restore();
+    else window.addEventListener("load", restore);
+
+    var ticking = false;
+    function save() {
+      ticking = false;
+      try { localStorage.setItem(key, String(Math.round(window.scrollY))); } catch (e) {}
+    }
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(save);
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("beforeunload", save);
+  }
+
   function ready(fn) {
     if (document.readyState !== "loading") fn();
     else document.addEventListener("DOMContentLoaded", fn);
@@ -2368,6 +2403,7 @@ READER_SCRIPT = """
     initRefPreviews();
     initProgressBar();
     // initFocusBar(); -- temporarily disabled
+    initReadingPosition();
   });
 })();
 """
