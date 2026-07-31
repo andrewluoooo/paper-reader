@@ -41,6 +41,7 @@ RAW_DIR = LIBRARY_DIR / "raw"
 ALLOWED_UPLOAD_SUFFIXES = (".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", ".htm")
 HTML_SOURCE_SUFFIXES = (".html", ".htm")
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
+PAPER_STATUSES = ("inbox", "later", "archive")
 
 
 def _load_index() -> list[dict]:
@@ -87,6 +88,7 @@ def _process_upload(filename: str, data: bytes) -> dict:
         "lastOpenedAt": None,
         "rawHtmlPath": raw_html_path,
         "tags": [],
+        "status": "inbox",
     }
     items = _load_index()
     items.insert(0, entry)
@@ -145,6 +147,19 @@ def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
             continue
         seen.setdefault(t.lower(), t)
     entry["tags"] = sorted(seen.values(), key=str.lower)
+    _save_index(items)
+    return entry
+
+
+def _set_paper_status(paper_id: str, status: str) -> dict | None:
+    """Move a paper between inbox/later/archive. Returns the updated
+    entry, or None if no paper with that id exists. Caller is
+    responsible for validating status against PAPER_STATUSES."""
+    items = _load_index()
+    entry = next((e for e in items if e["id"] == paper_id), None)
+    if entry is None:
+        return None
+    entry["status"] = status
     _save_index(items)
     return entry
 
@@ -217,6 +232,15 @@ body {
 .header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1em; }
 h1 { font-size: 2em; margin: 0 0 0.2em; }
 .sub { color: var(--muted); margin: 0 0 2.2em; font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.95em; }
+.tabs-row { display: flex; align-items: flex-end; gap: 1.8em; margin: 2em 0 1.2em; border-bottom: 1px solid var(--rule); }
+.tab-btn {
+  background: none; border: none; padding: 0 0 0.7em; margin-bottom: -1px; cursor: pointer;
+  font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.82em; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+  border-bottom: 2px solid transparent;
+}
+.tab-btn:hover { color: var(--fg); }
+.tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
 .icon-btn {
   flex-shrink: 0; width: 36px; height: 36px; border-radius: 999px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); cursor: pointer;
@@ -301,13 +325,15 @@ input[type=file] { display: none; }
   padding: 0.15em 0.6em; font-size: 0.76em; font-family: -apple-system, "Segoe UI", sans-serif;
   width: 8em;
 }
-.paper-delete-btn {
-  flex-shrink: 0; border: none; background: none; color: var(--muted); cursor: pointer;
+.paper-actions { display: flex; align-items: center; flex-shrink: 0; gap: 0.1em; margin-top: -0.2em; }
+.paper-action-btn {
+  border: none; background: none; color: var(--muted); cursor: pointer;
   padding: 0.4em; border-radius: 7px; display: inline-flex; align-items: center; justify-content: center;
-  margin-top: -0.2em;
 }
+.paper-action-btn:hover { color: var(--fg); background: var(--rule); }
+.paper-action-btn.active { color: var(--accent); }
+.paper-action-btn svg { width: 16px; height: 16px; display: block; }
 .paper-delete-btn:hover { color: var(--error); background: rgba(179, 38, 30, 0.1); }
-.paper-delete-btn svg { width: 16px; height: 16px; display: block; }
 .empty-state { color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif; text-align: center; padding: 3em 0; }
 .site-footer {
   margin-top: 3em; padding-top: 1.5em; border-top: 1px solid var(--rule);
@@ -335,6 +361,12 @@ input[type=file] { display: none; }
     <input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm">
   </div>
   <div class="status" id="status"></div>
+
+  <div class="tabs-row" role="tablist">
+    <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
+    <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
+    <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
+  </div>
 
   <div class="search-row">
     <input type="text" id="searchBox" placeholder="Search papers by title or author...">
@@ -365,6 +397,27 @@ input[type=file] { display: none; }
     '<polyline points="3 6 5 6 21 6"></polyline>' +
     '<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>' +
     '<line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+  var INBOX_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>' +
+    '<path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>';
+  var LATER_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>';
+  var ARCHIVE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect>' +
+    '<line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+  var STATUS_ACTIONS = [
+    { status: "inbox", icon: INBOX_ICON, label: "Move to Inbox" },
+    { status: "later", icon: LATER_ICON, label: "Move to Later" },
+    { status: "archive", icon: ARCHIVE_ICON, label: "Move to Archive" }
+  ];
+  var TAB_EMPTY_MESSAGES = {
+    inbox: "Nothing in your inbox.",
+    later: "Nothing saved for later.",
+    archive: "Nothing archived yet."
+  };
 
   var SETTINGS_KEY = "paper_reader_settings";
   var SVG_OPEN = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -412,6 +465,7 @@ input[type=file] { display: none; }
 
   var activeTags = [];
   var sortBy = loadSettings().sortBy || "added";
+  var currentTab = loadSettings().tab || "inbox";
 
   var SORT_COMPARATORS = {
     added: function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); },
@@ -465,6 +519,24 @@ input[type=file] { display: none; }
       .catch(function (e) { setStatus("Could not update tags: " + e.message, "error"); });
   }
 
+  function updatePaperStatus(p, status) {
+    fetch("/api/papers/" + encodeURIComponent(p.id) + "/status", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: status })
+    })
+      .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setStatus("Could not move paper: " + (res.data.error || "unknown error"), "error");
+          return;
+        }
+        p.status = res.data.status;
+        render(document.getElementById("searchBox").value);
+      })
+      .catch(function (e) { setStatus("Could not move paper: " + e.message, "error"); });
+  }
+
   function startTagInput(p, tagsWrap, addBtn) {
     var input = document.createElement("input");
     input.type = "text";
@@ -490,6 +562,7 @@ input[type=file] { display: none; }
     var list = document.getElementById("paperList");
     var q = (filter || "").trim().toLowerCase();
     var filtered = papers.filter(function (p) {
+      if ((p.status || "inbox") !== currentTab) return false;
       if (q) {
         var hay = (p.title + " " + (p.authors || []).join(" ") + " " + (p.venue || "")).toLowerCase();
         if (hay.indexOf(q) === -1) return false;
@@ -502,9 +575,11 @@ input[type=file] { display: none; }
     });
     filtered.sort(SORT_COMPARATORS[sortBy] || SORT_COMPARATORS.added);
     if (!filtered.length) {
-      list.innerHTML = '<div class="empty-state">' +
-        (papers.length ? "No matching papers." : "No papers yet \\u2014 drop one above to get started.") +
-        "</div>";
+      var emptyMsg;
+      if (!papers.length) emptyMsg = "No papers yet \\u2014 drop one above to get started.";
+      else if (q || activeTags.length) emptyMsg = "No matching papers.";
+      else emptyMsg = TAB_EMPTY_MESSAGES[currentTab] || "Nothing here yet.";
+      list.innerHTML = '<div class="empty-state">' + emptyMsg + "</div>";
       return;
     }
     list.innerHTML = "";
@@ -528,9 +603,26 @@ input[type=file] { display: none; }
       a.appendChild(titleEl);
       a.appendChild(metaEl);
 
+      var actions = document.createElement("div");
+      actions.className = "paper-actions";
+      STATUS_ACTIONS.forEach(function (spec) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "paper-action-btn" + ((p.status || "inbox") === spec.status ? " active" : "");
+        btn.setAttribute("aria-label", spec.label);
+        btn.title = spec.label;
+        btn.innerHTML = spec.icon;
+        btn.addEventListener("click", function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          updatePaperStatus(p, spec.status);
+        });
+        actions.appendChild(btn);
+      });
+
       var delBtn = document.createElement("button");
       delBtn.type = "button";
-      delBtn.className = "paper-delete-btn";
+      delBtn.className = "paper-action-btn paper-delete-btn";
       delBtn.setAttribute("aria-label", "Remove from library");
       delBtn.title = "Remove from library";
       delBtn.innerHTML = TRASH_ICON;
@@ -539,9 +631,10 @@ input[type=file] { display: none; }
         e.stopPropagation();
         removePaper(p);
       });
+      actions.appendChild(delBtn);
 
       top.appendChild(a);
-      top.appendChild(delBtn);
+      top.appendChild(actions);
       card.appendChild(top);
 
       var tagsWrap = document.createElement("div");
@@ -662,6 +755,22 @@ input[type=file] { display: none; }
     saveSettings({ sortBy: sortBy });
     render(document.getElementById("searchBox").value);
   });
+
+  var tabButtons = Array.prototype.slice.call(document.querySelectorAll(".tab-btn"));
+  function applyActiveTab() {
+    tabButtons.forEach(function (btn) {
+      btn.classList.toggle("active", btn.dataset.status === currentTab);
+    });
+  }
+  tabButtons.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      currentTab = btn.dataset.status;
+      saveSettings({ tab: currentTab });
+      applyActiveTab();
+      render(document.getElementById("searchBox").value);
+    });
+  });
+  applyActiveTab();
 
   initTheme();
   loadPapers();
@@ -792,6 +901,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": "expected {\"tags\": [...]}"}, 400)
                 return
             entry = _set_paper_tags(paper_id, tags)
+            if entry is None:
+                self._send_json({"error": "not found"}, 404)
+            else:
+                self._send_json(entry)
+        elif parsed.path.startswith("/api/papers/") and parsed.path.endswith("/status"):
+            paper_id = os.path.basename(parsed.path[len("/api/papers/") : -len("/status")])
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                self._send_json({"error": "invalid JSON body"}, 400)
+                return
+            status_val = body.get("status")
+            if status_val not in PAPER_STATUSES:
+                self._send_json({"error": "status must be one of: " + ", ".join(PAPER_STATUSES)}, 400)
+                return
+            entry = _set_paper_status(paper_id, status_val)
             if entry is None:
                 self._send_json({"error": "not found"}, 404)
             else:
