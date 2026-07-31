@@ -258,6 +258,8 @@ input[type=file] { display: none; }
   <footer class="site-footer">
     <a href="/about">About</a>
     <span class="footer-sep">&middot;</span>
+    <a href="https://github.com/andrewluoooo/paper-reader">GitHub</a>
+    <span class="footer-sep">&middot;</span>
     <span>Designed by Andrew Luo and Created with Claude Code</span>
   </footer>
 </div>
@@ -486,6 +488,7 @@ body {
 .back-link svg { display: block; }
 h1 { font-size: 1.6em; margin: 0 0 0.9em; }
 p { line-height: 1.7; font-size: 1.05em; }
+p a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -499,7 +502,7 @@ p { line-height: 1.7; font-size: 1.05em; }
   </a>
   <h1>About</h1>
   <p>readwise (Reader) is one of my favorite products of all time. unfortunately they never added latex support so I could not read papers using the default. i vibe coded this out so that i can do that now.</p>
-  <p>given the fact that this is vibe coded and that i am prone to dumbassery, please treat this as a prototype and don't do anything extremely stupid. if you like this idea, let me know and i might flesh it out even more! you are free to self host if you find this valuable for your workflow. all the code is on github.</p>
+  <p>given the fact that this is vibe coded and that i am prone to dumbassery, please treat this as a prototype and don't do anything extremely stupid. if you like this idea, let me know and i might flesh it out even more! you are free to self host if you find this valuable for your workflow. all the code is on <a href="https://github.com/andrewluoooo/paper-reader">github</a>.</p>
 </div>
 </body>
 </html>
