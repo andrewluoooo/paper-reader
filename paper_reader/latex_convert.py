@@ -93,6 +93,27 @@ def _find_main_tex(src_dir: Path) -> Path:
     )
 
 
+def _use_prebuilt_bibliography(main_tex: Path) -> None:
+    """If a pre-generated .bbl sits next to the main .tex (the common arXiv
+    submission pattern -- authors check in the bibtex/biber output since
+    arXiv doesn't reliably run bibtex itself), point the document at it
+    directly instead of \\bibliography{...}.
+
+    LaTeXML's built-in BibTeX emulation only understands classic BibTeX.
+    Many modern .bib files are biblatex-flavored (a bare `date = {...}`
+    field instead of `year`, entry types like @online/@software) that it
+    can't resolve, silently leaving every \\cite as a "missing bibkey"
+    with no error. A checked-in .bbl is already-formatted plain LaTeX by
+    the time LaTeXML sees it, sidestepping the whole problem."""
+    bbl = main_tex.with_suffix(".bbl")
+    if not bbl.is_file():
+        return
+    text = main_tex.read_text(encoding="utf-8", errors="ignore")
+    new_text = re.sub(r"\\bibliography\{[^}]*\}", f"\\\\input{{{bbl.name}}}", text)
+    if new_text != text:
+        main_tex.write_text(new_text, encoding="utf-8")
+
+
 def _rasterize_vector_figures(src_dir: Path) -> set[str]:
     """Convert every .pdf/.eps figure under src_dir to a sibling .png (via
     pdftoppm / ghostscript) and delete the vector original, so LaTeXML's
@@ -163,6 +184,7 @@ def convert(input_path: str, workdir: str) -> str:
 
     src_dir = _prepare_source_dir(input_path, workdir_p)
     main_tex = _find_main_tex(src_dir)
+    _use_prebuilt_bibliography(main_tex)
 
     converted = _rasterize_vector_figures(src_dir)
     _rewrite_includegraphics(src_dir, converted)

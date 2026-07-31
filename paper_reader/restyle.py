@@ -12,8 +12,9 @@ import html
 import json
 import mimetypes
 import os
+import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 # Toolbar/UI icons, in the style of Feather Icons (MIT licensed,
 # https://feathericons.com/) -- thin-stroke, no fill, 24x24 grid. Used
@@ -2536,27 +2537,95 @@ def _fix_notes(article) -> None:
 
 def _fix_citations(article) -> None:
     """In-text \\cite links should show the bibliography's item number,
-    but when LaTeXML can't fully resolve a citation style (seen here with
-    acmart's numeric style) it falls back to printing the raw BibTeX key
-    plus a stray trailing comma meant for an empty page/note field. The
-    correct number is already sitting right there in the bibliography
-    list's own tag, so recover it from there instead of showing the raw
-    key.
+    but when LaTeXML can't fully resolve a *numeric* citation style it
+    falls back to printing the raw BibTeX key plus a stray trailing comma
+    meant for an empty page/note field. The correct number is already
+    sitting right there in the bibliography list's own tag, so recover it
+    from there instead of showing the raw key.
+
+    Only applies when that tag is actually a plain number -- author-year
+    styles (natbib citep/citet) put the full "Author (Year)" label there
+    instead, and those citation links are already correct as LaTeXML
+    rendered them, so overwriting them with the full label would corrupt
+    already-good text.
     """
     bib_number = {}
     for li in article.select(".ltx_bibitem[id]"):
         tag = li.find(class_="ltx_tag_bibitem")
-        if tag:
-            bib_number[li["id"]] = tag.get_text(strip=True).strip("()")
+        if not tag:
+            continue
+        text = tag.get_text(strip=True).strip("()")
+        if text.isdigit():
+            bib_number[li["id"]] = text
 
     for cite in article.find_all("cite", class_="ltx_cite"):
         for a in cite.find_all("a", class_="ltx_ref"):
             href = a.get("href", "")
             target_id = href[1:] if href.startswith("#") else ""
-            if target_id in bib_number:
+            if target_id in bib_number and not a.get_text(strip=True).isdigit():
                 a.string = bib_number[target_id]
             else:
                 a.string = a.get_text().rstrip(", ").rstrip(",")
+
+
+_CITE_AUTHOR_PREFIX_RE = re.compile(r"^(?P<lead>[(;]\s*)?(?P<authors>.*?)(?P<trail>,\s*|\s*\(\s*)?$", re.S)
+
+
+def _abbreviate_author_names(authors: str) -> str:
+    """'Mohammadi Makrani et al.' -> 'Mohammadi Makrani'; 'Liu and Schafer'
+    -> 'Liu'; 'Smith, Jones, and Lee' -> 'Smith' (fully spelled-out
+    multi-author lists, no "et al."). Keeps just the first author."""
+    first = re.split(r"\s+et\s+al\.?", authors.strip(), maxsplit=1)[0]
+    first = re.split(r"\s+and\s+", first, maxsplit=1)[0]
+    first = first.split(",")[0]
+    return first.strip()
+
+
+def _abbreviate_author_year_citations(article) -> None:
+    """Numeric citation styles ("[1]") are already compact, but
+    author-year styles (natbib \\citep/\\citet, e.g. "(Smith et al.,
+    2020; Jones and Lee, 2019)") spell out every author list in full --
+    for a citation group with several references that can run to
+    multiple lines in the narrow reading column. Trim each one down to
+    just the first author's surname, keeping the year (still linked to
+    its bibliography entry) so the citation stays identifiable and
+    clickable, just shorter.
+
+    Detected per citation by looking at everything between this
+    bibliography link and the previous one (or the start of the <cite>):
+    numeric styles have nothing there but punctuation ("(", "; "), while
+    author-year styles have an actual name -- only the latter gets
+    touched. That span can be more than one node: biblatex/natbib often
+    wrap just the "et al." suffix in its own
+    <span class="ltx_bib_etal">, so the full author text isn't always one
+    single text node immediately before the link.
+    """
+    for cite in article.find_all("cite", class_="ltx_cite"):
+        for a in cite.find_all("a", class_="ltx_ref"):
+            nodes = []
+            node = a.previous_sibling
+            while node is not None:
+                if getattr(node, "name", None) == "a" and "ltx_ref" in (node.get("class") or []):
+                    break
+                nodes.append(node)
+                node = node.previous_sibling
+            if not nodes:
+                continue
+            nodes.reverse()
+            combined = "".join(n.get_text() if hasattr(n, "get_text") else str(n) for n in nodes)
+            m = _CITE_AUTHOR_PREFIX_RE.match(combined)
+            if not m:
+                continue
+            authors = m.group("authors")
+            if not re.search(r"[A-Za-z]", authors):
+                continue  # numeric style -- just punctuation here, leave alone
+            abbreviated = _abbreviate_author_names(authors)
+            if not abbreviated or abbreviated == authors.strip():
+                continue
+            new_text = (m.group("lead") or "") + abbreviated + (m.group("trail") or "")
+            nodes[0].replace_with(NavigableString(new_text))
+            for extra in nodes[1:]:
+                extra.extract()
 
 
 def _strip_leaked_preamble_junk(article) -> None:
@@ -2651,6 +2720,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 
     _fix_notes(article)
     _fix_citations(article)
+    _abbreviate_author_year_citations(article)
     _strip_latexml_scaling_wrappers(article)
     _wrap_tables(soup, article)
     _wrap_listings(soup, article)
