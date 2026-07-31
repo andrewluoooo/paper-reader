@@ -84,6 +84,7 @@ def _process_upload(filename: str, data: bytes) -> dict:
         "venue": metadata.get("venue", ""),
         "sourceFilename": filename,
         "addedAt": time.time(),
+        "lastOpenedAt": None,
         "rawHtmlPath": raw_html_path,
         "tags": [],
     }
@@ -146,6 +147,18 @@ def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
     entry["tags"] = sorted(seen.values(), key=str.lower)
     _save_index(items)
     return entry
+
+
+def _touch_opened(paper_id: str) -> None:
+    """Record that a paper's reader page was just served, for the
+    "most recently opened" sort option. Best-effort: silently does
+    nothing if the id isn't in the index."""
+    items = _load_index()
+    entry = next((e for e in items if e["id"] == paper_id), None)
+    if entry is None:
+        return
+    entry["lastOpenedAt"] = time.time()
+    _save_index(items)
 
 
 def rebuild_library(quiet: bool = False) -> tuple[int, int]:
@@ -229,11 +242,20 @@ input[type=file] { display: none; }
   margin-right: 0.5em; vertical-align: -0.15em;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.search-row { display: flex; gap: 0.6em; margin-bottom: 1em; }
 .search-row input {
-  width: 100%; padding: 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
+  flex: 1; min-width: 0; padding: 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
   background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
-  font-size: 0.95em; margin-bottom: 1em;
+  font-size: 0.95em;
 }
+.sort-select {
+  flex-shrink: 0; padding: 0.7em 2.2em 0.7em 1em; border-radius: 8px; border: 1px solid var(--rule);
+  background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.9em; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235b5b5b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 0.9em center; appearance: none; -webkit-appearance: none;
+}
+.sort-select:hover { border-color: var(--accent); }
 .tag-filter-row { display: flex; flex-wrap: wrap; gap: 0.5em; margin-bottom: 1.4em; }
 .tag-filter-row:empty { display: none; }
 .tag-chip {
@@ -316,6 +338,11 @@ input[type=file] { display: none; }
 
   <div class="search-row">
     <input type="text" id="searchBox" placeholder="Search papers by title or author...">
+    <select id="sortSelect" class="sort-select" aria-label="Sort papers by">
+      <option value="added">Most recently added</option>
+      <option value="opened">Most recently opened</option>
+      <option value="title">Title (A&ndash;Z)</option>
+    </select>
   </div>
   <div class="tag-filter-row" id="tagFilterRow"></div>
 
@@ -384,6 +411,13 @@ input[type=file] { display: none; }
   }
 
   var activeTags = [];
+  var sortBy = "added";
+
+  var SORT_COMPARATORS = {
+    added: function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); },
+    opened: function (a, b) { return (b.lastOpenedAt || 0) - (a.lastOpenedAt || 0); },
+    title: function (a, b) { return a.title.localeCompare(b.title); }
+  };
 
   function allTags() {
     var set = {};
@@ -466,6 +500,7 @@ input[type=file] { display: none; }
       }
       return true;
     });
+    filtered.sort(SORT_COMPARATORS[sortBy] || SORT_COMPARATORS.added);
     if (!filtered.length) {
       list.innerHTML = '<div class="empty-state">' +
         (papers.length ? "No matching papers." : "No papers yet \\u2014 drop one above to get started.") +
@@ -620,6 +655,10 @@ input[type=file] { display: none; }
   document.getElementById("searchBox").addEventListener("input", function () {
     render(this.value);
   });
+  document.getElementById("sortSelect").addEventListener("change", function () {
+    sortBy = this.value;
+    render(document.getElementById("searchBox").value);
+  });
 
   initTheme();
   loadPapers();
@@ -766,6 +805,7 @@ class Handler(BaseHTTPRequestHandler):
         if not path.is_file():
             self._send_html("<h1>404</h1>", 404)
             return
+        _touch_opened(safe_name[: -len(".html")])
         self._send_bytes(path.read_bytes(), "text/html; charset=utf-8")
 
     def _handle_upload(self, parsed) -> None:
