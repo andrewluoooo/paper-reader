@@ -544,10 +544,16 @@ input[type=file] { display: none; }
 }
 .pull-refresh-indicator[hidden] { display: none; }
 .pull-refresh-indicator.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+.pull-refresh-arrow {
+  width: 14px; height: 14px; flex-shrink: 0; color: var(--muted);
+  transition: transform 0.12s ease;
+}
+.pull-refresh-arrow[hidden] { display: none; }
 .pull-refresh-spinner {
   width: 0.9em; height: 0.9em; border: 2px solid var(--rule); border-top-color: var(--accent);
   border-radius: 50%; flex-shrink: 0;
 }
+.pull-refresh-spinner[hidden] { display: none; }
 .pull-refresh-spinner.spinning { animation: spin 0.6s linear infinite; }
 
 @media (max-width: 1000px) { .info-panel { display: none !important; } }
@@ -628,7 +634,8 @@ input[type=file] { display: none; }
 <div class="undo-toast-container" id="undoToasts"></div>
 
 <div class="pull-refresh-indicator" id="pullRefreshIndicator" hidden>
-  <span class="pull-refresh-spinner" id="pullRefreshSpinner"></span>
+  <svg class="pull-refresh-arrow" id="pullRefreshArrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="19" x2="12" y2="5"></line><polyline points="5 12 12 5 19 12"></polyline></svg>
+  <span class="pull-refresh-spinner" id="pullRefreshSpinner" hidden></span>
   <span id="pullRefreshLabel">Pull to refresh</span>
 </div>
 
@@ -1248,28 +1255,33 @@ input[type=file] { display: none; }
   }
 
   /* -------------------------------------------------------- pull to refresh */
-  // Scrolling up past a small threshold while already at the top of the
-  // page reloads the paper list, mirroring the mobile "pull to refresh"
-  // gesture with a mouse wheel / trackpad. Only counts while the page
-  // itself is at scrollY 0 and the wheel is over the main content, not
-  // while scrolling inside the sidebar or info panel.
+  // Mirrors iOS/macOS pull-to-refresh: pulling (scrolling up while already
+  // at the top of the page) tips an arrow over as you approach the
+  // threshold and swaps the label to "Release to refresh", but the reload
+  // itself only fires once you actually let go -- not mid-pull. A mouse
+  // wheel has no real "finger lifted" event, so "release" is inferred by
+  // a short pause in upward wheel activity (debounced); if you stop short
+  // of the threshold it just springs back with no refresh, same as the
+  // native gesture.
   function initPullToRefresh() {
     var indicator = document.getElementById("pullRefreshIndicator");
     var label = document.getElementById("pullRefreshLabel");
+    var arrow = document.getElementById("pullRefreshArrow");
     var spinner = document.getElementById("pullRefreshSpinner");
     if (!indicator) return;
     var PULL_THRESHOLD = 90;
+    var RELEASE_DEBOUNCE_MS = 200;
     var pullAmount = 0;
     var cooldownUntil = 0;
+    var releaseTimer = null;
     var hideTimer = null;
+    var refreshing = false;
 
-    function show(text, spinning) {
+    function reveal() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       indicator.hidden = false;
       void indicator.offsetWidth; // force reflow so the fade-in transition plays
       indicator.classList.add("visible");
-      label.textContent = text;
-      spinner.classList.toggle("spinning", !!spinning);
     }
     function hide(delay) {
       if (hideTimer) clearTimeout(hideTimer);
@@ -1278,28 +1290,53 @@ input[type=file] { display: none; }
         setTimeout(function () { indicator.hidden = true; }, 150);
       }, delay || 0);
     }
+    function updatePullUI(amount) {
+      reveal();
+      arrow.hidden = false;
+      spinner.hidden = true;
+      spinner.classList.remove("spinning");
+      var pct = Math.max(0, Math.min(1, amount / PULL_THRESHOLD));
+      arrow.style.transform = "rotate(" + (pct * 180) + "deg)";
+      label.textContent = pct >= 1 ? "Release to refresh" : "Pull to refresh";
+    }
+    function cancelPull() {
+      if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
+      pullAmount = 0;
+      hide();
+    }
+    function release() {
+      releaseTimer = null;
+      if (pullAmount < PULL_THRESHOLD) { cancelPull(); return; }
+      pullAmount = 0;
+      refreshing = true;
+      cooldownUntil = Date.now() + 1500;
+      arrow.hidden = true;
+      spinner.hidden = false;
+      spinner.classList.add("spinning");
+      label.textContent = "Refreshing\\u2026";
+      loadPapers();
+      // Hold the "Refreshing..." state briefly even though the fetch
+      // itself is usually near-instant, so it doesn't just flash by.
+      setTimeout(function () {
+        refreshing = false;
+        hide(300);
+      }, 500);
+    }
 
     window.addEventListener("wheel", function (e) {
-      if (Date.now() < cooldownUntil) return;
+      if (refreshing || Date.now() < cooldownUntil) return;
       if (e.target && e.target.closest && e.target.closest(".sidebar, .info-panel")) return;
       if (window.scrollY > 0) {
-        if (pullAmount) { pullAmount = 0; hide(); }
+        if (pullAmount) cancelPull();
         return;
       }
       if (e.deltaY < 0) {
         pullAmount += -e.deltaY;
-        if (pullAmount < PULL_THRESHOLD) {
-          show("Pull to refresh", false);
-        } else {
-          pullAmount = 0;
-          cooldownUntil = Date.now() + 1500;
-          show("Refreshing\\u2026", true);
-          loadPapers();
-          hide(600);
-        }
+        updatePullUI(pullAmount);
+        if (releaseTimer) clearTimeout(releaseTimer);
+        releaseTimer = setTimeout(release, RELEASE_DEBOUNCE_MS);
       } else if (e.deltaY > 0 && pullAmount) {
-        pullAmount = 0;
-        hide();
+        cancelPull();
       }
     }, { passive: true });
   }
