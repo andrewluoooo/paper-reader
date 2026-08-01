@@ -392,6 +392,23 @@ html.sidebar-left-collapsed .reader-sidebar-resize { display: none; }
   justify-content: space-between;
   padding-right: 0.8em;
 }
+.reader-kbd-hint {
+  display: inline-block;
+  min-width: 1.3em;
+  text-align: center;
+  padding: 0.05em 0.35em;
+  margin-left: 0.5em;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: var(--control-bg);
+  color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: 1px;
+}
 .reader-sidebar-close {
   display: inline-flex;
   align-items: center;
@@ -689,8 +706,13 @@ html.sidebar-right-collapsed .reader-sidebar-right .reader-sidebar-resize { disp
 .reader-sidebar-right-header {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   margin-bottom: 0.6em;
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
 }
 .reader-sidebar-close-right {
   display: inline-flex;
@@ -1302,10 +1324,12 @@ READER_SCRIPT = """
       saveSettings({ sidebarLeftCollapsed: v });
       updateMarginComments();
     }
-    if (toggle) toggle.addEventListener("click", function () {
+    function toggleSidebar() {
       if (window.innerWidth <= 900) { sidebar.classList.contains("open") ? close() : open(); }
       else { collapse(!document.documentElement.classList.contains("sidebar-left-collapsed")); }
-    });
+    }
+    window.__readerToggleLeftSidebar = toggleSidebar;
+    if (toggle) toggle.addEventListener("click", toggleSidebar);
     if (closeBtn) closeBtn.addEventListener("click", function () {
       if (window.innerWidth <= 900) close(); else collapse(true);
     });
@@ -1898,10 +1922,12 @@ READER_SCRIPT = """
     window.__readerOpenRightSidebar = function () {
       if (window.innerWidth <= 1150) open(); else collapse(false);
     };
-    if (toggle) toggle.addEventListener("click", function () {
+    function toggleSidebar() {
       if (window.innerWidth <= 1150) { sidebar.classList.contains("open") ? close() : open(); }
       else { collapse(!document.documentElement.classList.contains("sidebar-right-collapsed")); }
-    });
+    }
+    window.__readerToggleRightSidebar = toggleSidebar;
+    if (toggle) toggle.addEventListener("click", toggleSidebar);
     if (closeBtn) closeBtn.addEventListener("click", function () {
       if (window.innerWidth <= 1150) close(); else collapse(true);
     });
@@ -1929,7 +1955,21 @@ READER_SCRIPT = """
 
   var selToolbar, activeMarkId = null;
   var hlHandleStart, hlHandleEnd, hlDragState = null, hlDragRAF = null;
-  function hideSelToolbar() { if (selToolbar) selToolbar.hidden = true; activeMarkId = null; hideHandles(); }
+  var hoverMarkId = null;
+  function hideSelToolbar() { if (selToolbar) selToolbar.hidden = true; activeMarkId = null; hoverMarkId = null; hideHandles(); }
+  // Shows the drag handles for whatever highlight is under the cursor, so
+  // they're discoverable without first clicking to open the manage
+  // toolbar. Doesn't touch activeMarkId -- an actively-managed highlight
+  // (opened by a click) keeps its handles regardless of where the mouse
+  // wanders until the toolbar itself is closed.
+  function updateHoverHandles(x, y) {
+    if (activeMarkId || hlDragState) return;
+    var hlId = findHighlightIdAtPoint(x, y);
+    if (hlId === hoverMarkId) return;
+    hoverMarkId = hlId;
+    if (hlId) positionHandles(hlId);
+    else hideHandles();
+  }
   function positionToolbar(rect) {
     var top = Math.max(8, rect.top - 46);
     var left = Math.max(8, Math.min(window.innerWidth - 170, rect.left + rect.width / 2 - 80));
@@ -2137,12 +2177,13 @@ READER_SCRIPT = """
     });
     var hlDragLastEvent = null;
     document.addEventListener("pointermove", function (e) {
-      if (!hlDragState) return;
       hlDragLastEvent = e;
       if (hlDragRAF) return;
       hlDragRAF = requestAnimationFrame(function () {
         hlDragRAF = null;
-        if (hlDragLastEvent) updateHighlightDrag(hlDragLastEvent);
+        if (!hlDragLastEvent) return;
+        if (hlDragState) updateHighlightDrag(hlDragLastEvent);
+        else updateHoverHandles(hlDragLastEvent.clientX, hlDragLastEvent.clientY);
       });
     });
     document.addEventListener("pointerup", function () { if (hlDragState) endHighlightDrag(); });
@@ -2493,6 +2534,20 @@ READER_SCRIPT = """
     window.addEventListener("beforeunload", save);
   }
 
+  /* ----------------------------------------------------- keyboard shortcuts */
+  function initKeyboardShortcuts() {
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "[" && e.key !== "]") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      var t = e.target;
+      var tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+      e.preventDefault();
+      if (e.key === "[" && window.__readerToggleLeftSidebar) window.__readerToggleLeftSidebar();
+      else if (e.key === "]" && window.__readerToggleRightSidebar) window.__readerToggleRightSidebar();
+    });
+  }
+
   function ready(fn) {
     if (document.readyState !== "loading") fn();
     else document.addEventListener("DOMContentLoaded", fn);
@@ -2508,6 +2563,7 @@ READER_SCRIPT = """
     initProgressBar();
     // initFocusBar(); -- temporarily disabled
     initReadingPosition();
+    initKeyboardShortcuts();
   });
 })();
 """
@@ -2900,15 +2956,15 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
   <div class="reader-progress-fill" id="readerProgressFill"></div>
 </div>
 <div class="reader-focus-bar" id="readerFocusBar" hidden></div>
-<button class="reader-sidebar-toggle" id="sidebarToggleBtn" aria-label="Show outline">{_icon("menu")}</button>
+<button class="reader-sidebar-toggle" id="sidebarToggleBtn" aria-label="Show outline" title="Show outline ([)">{_icon("menu")}</button>
 <div class="reader-sidebar-backdrop" id="sidebarBackdrop"></div>
 <div class="reader-sidebar-backdrop-right" id="sidebarRightBackdrop"></div>
 <div class="reader-margin-comments" id="marginComments"></div>
 <div class="reader-shell">
 <aside class="reader-sidebar" id="readerSidebar">
   <div class="reader-sidebar-title">
-    Outline
-    <button class="reader-sidebar-close" id="sidebarCloseBtn" aria-label="Close outline">{_icon("x", 16)}</button>
+    <span>Outline <kbd class="reader-kbd-hint">[</kbd></span>
+    <button class="reader-sidebar-close" id="sidebarCloseBtn" aria-label="Close outline" title="Close outline ([)">{_icon("x", 16)}</button>
   </div>
   <nav class="reader-outline">
 {outline_html}
@@ -2922,7 +2978,8 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 <aside class="reader-sidebar-right" id="readerSidebarRight">
   <div class="reader-sidebar-resize" id="sidebarResizeRight"></div>
   <div class="reader-sidebar-right-header">
-    <button class="reader-sidebar-close-right" id="sidebarRightCloseBtn" aria-label="Close panel">{_icon("x", 16)}</button>
+    <span>Notes <kbd class="reader-kbd-hint">]</kbd></span>
+    <button class="reader-sidebar-close-right" id="sidebarRightCloseBtn" aria-label="Close panel" title="Close panel (])">{_icon("x", 16)}</button>
   </div>
   <div class="reader-tabs">
     <button class="reader-tab-btn active" data-tab="tabInfo">Info</button>
@@ -2946,7 +3003,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 {f'<a class="reader-back-btn" href="{html.escape(back_link)}" aria-label="Back to library">{_icon("arrow-left")}</a>' if back_link else ''}
   <button id="themeToggleBtn" aria-label="Toggle theme">{_icon("circle-half")}</button>
   <button id="textStyleBtn" aria-label="Text style">Aa</button>
-  <button class="reader-notes-toggle" id="sidebarRightToggleBtn" aria-label="Show highlights and notes">{_icon("edit")}</button>
+  <button class="reader-notes-toggle" id="sidebarRightToggleBtn" aria-label="Show highlights and notes" title="Show highlights and notes (])">{_icon("edit")}</button>
 </div>
 
 <div class="reader-popover reader-popover-wide" id="textStylePopover" hidden>

@@ -487,6 +487,44 @@ input[type=file] { display: none; }
 .drop-overlay-card strong { display: block; font-size: 1.2em; margin-bottom: 0.4em; color: var(--fg); }
 .drop-overlay-card div { color: var(--muted); font-size: 0.88em; }
 
+/* --------------------------------------------------------------- undo toasts */
+.undo-toast-container {
+  position: fixed; left: 1.2em; bottom: 1.2em; z-index: 200;
+  display: flex; flex-direction: column-reverse; gap: 0.6em;
+  pointer-events: none;
+}
+.undo-toast {
+  pointer-events: auto;
+  background: var(--fg); color: var(--bg);
+  border-radius: 10px; padding: 0.75em 0.6em 0.75em 1em;
+  min-width: 260px; max-width: 340px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  display: flex; align-items: center; gap: 0.6em;
+  position: relative; overflow: hidden;
+  animation: undoToastIn 0.2s ease;
+}
+.undo-toast.leaving { animation: undoToastOut 0.15s ease forwards; }
+.undo-toast-msg {
+  flex: 1; min-width: 0; font-size: 0.88em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.undo-toast-btn {
+  flex-shrink: 0; border: none; background: none; color: inherit; cursor: pointer;
+  font-weight: 700; font-size: 0.85em; padding: 0.35em 0.6em; border-radius: 6px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.undo-toast-btn:hover { background: color-mix(in srgb, var(--bg) 15%, transparent); }
+.undo-toast-bar {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: color-mix(in srgb, var(--bg) 22%, transparent);
+}
+.undo-toast-bar-fill {
+  height: 100%; width: 100%; background: var(--bg);
+  transform-origin: left; transform: scaleX(1);
+}
+@keyframes undoToastIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes undoToastOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(6px); } }
+
 @media (max-width: 1000px) { .info-panel { display: none !important; } }
 @media (max-width: 720px) { .sidebar { display: none; } }
 </style>
@@ -561,6 +599,8 @@ input[type=file] { display: none; }
     <div>.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page</div>
   </div>
 </div>
+
+<div class="undo-toast-container" id="undoToasts"></div>
 
 <script>
 (function () {
@@ -711,7 +751,89 @@ input[type=file] { display: none; }
       .catch(function (e) { setStatus("Could not update tags: " + e.message, "error"); });
   }
 
-  function updatePaperStatus(p, status) {
+  /* ------------------------------------------------------------ undo toasts */
+  // Delete and archive are both easy to trigger by accident, so instead of
+  // a blocking confirm() they apply optimistically and give the user a
+  // 5s window (with a visible countdown bar) to undo before the change
+  // actually hits the server. Multiple toasts can stack; each tracks its
+  // own timer under a stable key so a second action on the same paper
+  // flushes (commits) whatever was already pending first, rather than
+  // leaving two conflicting timers racing each other.
+  var pendingActions = {};
+  var UNDO_WINDOW_MS = 5000;
+
+  function flushPendingAction(key) {
+    var pending = pendingActions[key];
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    if (pending.toast && pending.toast.parentNode) pending.toast.remove();
+    delete pendingActions[key];
+    pending.onCommit();
+  }
+
+  // Runs any still-pending undo actions immediately rather than losing
+  // them if the user navigates away (opens a paper, closes the tab) while
+  // a countdown is still running.
+  function flushAllPendingActions() {
+    Object.keys(pendingActions).forEach(flushPendingAction);
+  }
+  window.addEventListener("pagehide", flushAllPendingActions);
+  window.addEventListener("beforeunload", flushAllPendingActions);
+
+  function showUndoToast(key, message, onCommit, onUndo) {
+    flushPendingAction(key);
+
+    var container = document.getElementById("undoToasts");
+    var toast = document.createElement("div");
+    toast.className = "undo-toast";
+
+    var msg = document.createElement("div");
+    msg.className = "undo-toast-msg";
+    msg.textContent = message;
+    msg.title = message;
+    toast.appendChild(msg);
+
+    var undoBtn = document.createElement("button");
+    undoBtn.type = "button";
+    undoBtn.className = "undo-toast-btn";
+    undoBtn.textContent = "Undo";
+    toast.appendChild(undoBtn);
+
+    var bar = document.createElement("div");
+    bar.className = "undo-toast-bar";
+    var fill = document.createElement("div");
+    fill.className = "undo-toast-bar-fill";
+    bar.appendChild(fill);
+    toast.appendChild(bar);
+
+    container.appendChild(toast);
+    // Kick the fill's shrink animation off on the next frame so the
+    // initial full-width state actually paints first.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        fill.style.transition = "transform " + UNDO_WINDOW_MS + "ms linear";
+        fill.style.transform = "scaleX(0)";
+      });
+    });
+
+    var timer = setTimeout(function () {
+      delete pendingActions[key];
+      toast.classList.add("leaving");
+      setTimeout(function () { toast.remove(); }, 150);
+      onCommit();
+    }, UNDO_WINDOW_MS);
+
+    undoBtn.addEventListener("click", function () {
+      clearTimeout(timer);
+      delete pendingActions[key];
+      toast.remove();
+      onUndo();
+    });
+
+    pendingActions[key] = { timer: timer, toast: toast, onCommit: onCommit };
+  }
+
+  function commitPaperStatus(p, status) {
     fetch("/api/papers/" + encodeURIComponent(p.id) + "/status", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -719,15 +841,33 @@ input[type=file] { display: none; }
     })
       .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
       .then(function (res) {
-        if (!res.ok) {
-          setStatus("Could not move paper: " + (res.data.error || "unknown error"), "error");
-          return;
-        }
-        p.status = res.data.status;
-        render(document.getElementById("searchBox").value);
-        if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+        if (!res.ok) setStatus("Could not move paper: " + (res.data.error || "unknown error"), "error");
       })
       .catch(function (e) { setStatus("Could not move paper: " + e.message, "error"); });
+  }
+
+  function updatePaperStatus(p, status) {
+    if (status !== "archive") {
+      commitPaperStatus(p, status);
+      p.status = status;
+      render(document.getElementById("searchBox").value);
+      if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+      return;
+    }
+    var prevStatus = p.status || "inbox";
+    p.status = "archive";
+    render(document.getElementById("searchBox").value);
+    if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+    showUndoToast(
+      "status:" + p.id,
+      'Archived "' + p.title + '"',
+      function () { commitPaperStatus(p, "archive"); },
+      function () {
+        p.status = prevStatus;
+        render(document.getElementById("searchBox").value);
+        if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+      }
+    );
   }
 
   function buildTagsEditor(p) {
@@ -1018,21 +1158,30 @@ input[type=file] { display: none; }
     });
   }
 
-  function removePaper(p) {
-    if (!window.confirm('Remove "' + p.title + '" from your library? This cannot be undone.')) return;
+  function commitPaperRemoval(p) {
     fetch("/api/papers/" + encodeURIComponent(p.id), { method: "DELETE" })
       .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
       .then(function (res) {
-        if (!res.ok) {
-          setStatus("Could not remove paper: " + (res.data.error || "unknown error"), "error");
-          return;
-        }
-        if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
-        loadPapers();
+        if (!res.ok) setStatus("Could not remove paper: " + (res.data.error || "unknown error"), "error");
       })
-      .catch(function (e) {
-        setStatus("Could not remove paper: " + e.message, "error");
-      });
+      .catch(function (e) { setStatus("Could not remove paper: " + e.message, "error"); });
+  }
+
+  function removePaper(p) {
+    if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
+    papers = papers.filter(function (x) { return x.id !== p.id; });
+    renderSidebarTags();
+    render(document.getElementById("searchBox").value);
+    showUndoToast(
+      "delete:" + p.id,
+      'Removed "' + p.title + '"',
+      function () { commitPaperRemoval(p); },
+      function () {
+        papers.push(p);
+        renderSidebarTags();
+        render(document.getElementById("searchBox").value);
+      }
+    );
   }
 
   function loadPapers() {
