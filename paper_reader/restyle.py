@@ -2272,10 +2272,12 @@ READER_SCRIPT = """
     // Handles are fixed-position, so they need to be re-anchored whenever
     // the page scrolls or resizes while a highlight is under management.
     window.addEventListener("scroll", function () {
-      if (activeMarkId && hlHandleStart && !hlHandleStart.hidden) positionHandles(activeMarkId);
+      var id = activeMarkId || hoverMarkId;
+      if (id && hlHandleStart && !hlHandleStart.hidden) positionHandles(id);
     }, { passive: true });
     window.addEventListener("resize", function () {
-      if (activeMarkId && hlHandleStart && !hlHandleStart.hidden) positionHandles(activeMarkId);
+      var id = activeMarkId || hoverMarkId;
+      if (id && hlHandleStart && !hlHandleStart.hidden) positionHandles(id);
     });
     // A pure viewport resize doesn't change .page's own box (it's capped
     // at --reader-max-width and just re-centers in the wider/narrower
