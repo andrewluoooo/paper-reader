@@ -110,19 +110,44 @@ won't be present in a saved snapshot.
 ### Importing a PDF
 
 When you don't have a LaTeX source or an HTML page -- just a `.pdf` -- drop
-it on the library (or pass it to the CLI) directly. Unlike the LaTeX and
-HTML paths, a PDF carries no semantic markup at all, so the title, authors,
-section headings, abstract, and references are reconstructed from layout:
-font size, boldness, and position on the page, with a two-column-aware
-reading order for the common academic two-column layout. The resulting page
-gets the same reflowable text, theming, and highlighting as any other paper
-in the library.
+it on the library (or pass it to the CLI) directly. PDF structure (title,
+authors, section headings, abstract, in-text citations, and the
+bibliography) is extracted by [GROBID](https://github.com/kermitt2/grobid),
+a machine-learning service purpose-built for parsing scholarly PDFs, then
+mapped into the same structure the LaTeX and HTML paths produce. The
+resulting page gets the same reflowable text, theming, highlighting, outline,
+and citation hover-previews as any other paper in the library -- including
+real, clickable citation links, since GROBID resolves in-text references
+against its own parsed bibliography.
 
-This is inherently more heuristic than the LaTeX or HTML paths -- unusual
-layouts, single-column papers with atypical heading styles, or PDFs that are
-scanned images without a real text layer may not extract cleanly. Author
-names are a rough split of whatever text sits directly under the title, with
-no affiliation/email parsing.
+**GROBID has to be running first.** It's a separate local service, not a
+Python dependency -- the easiest way to run it is with
+[Colima](https://github.com/abiosoft/colima) (a lightweight, GUI-free Docker
+runtime for macOS):
+
+```bash
+brew install colima docker
+colima start --cpu 4 --memory 4
+docker run --rm -d -p 8070:8070 --name grobid grobid/grobid:0.9.0-crf
+```
+
+That `-crf` tag is the CRF-only build (~500MB) rather than the `-full` build
+(~10GB) that also bundles GROBID's optional deep-learning models -- the CRF
+models are what GROBID uses by default either way, so unless you've got a
+GPU and specifically want the deep-learning models, `-crf` gets you the same
+extraction quality for a much smaller download.
+
+The first `docker run` still pulls an image, so give it a minute or two.
+After that, `docker start grobid` / `docker stop grobid` bring it back up or
+down without pulling again. paper-reader looks for GROBID at
+`http://localhost:8070` by default; point it elsewhere with the `GROBID_URL`
+environment variable if you're running it on a different host or port. If
+GROBID isn't reachable when you drop a PDF, you'll get a clear error telling
+you to start it.
+
+This is still best-effort -- scanned-image PDFs with no real text layer, or
+unusual layouts GROBID doesn't recognize well, may extract incompletely.
+Figures and tables come through as captions only (no embedded images).
 
 ## Notes
 

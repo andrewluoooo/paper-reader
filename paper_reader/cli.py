@@ -24,8 +24,8 @@ def main(argv=None) -> int:
             "either a LaTeX source (a .tex file, a project directory, or a source "
             "tarball/zip, e.g. an arXiv 'Other formats -> Source' download), an "
             "already-rendered HTML paper page saved from a publisher's site (browser "
-            "'Save Page As... Webpage, Complete'), or a plain .pdf (structure is "
-            "reconstructed from layout on a best-effort basis)."
+            "'Save Page As... Webpage, Complete'), or a plain .pdf (parsed via a local "
+            "GROBID service -- see README)."
         ),
     )
     parser.add_argument(
