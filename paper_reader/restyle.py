@@ -220,6 +220,33 @@ h4.ltx_title_subsubsection { font-size: 1.03em; font-weight: 700; margin: 1.3em 
 
 p.ltx_p { margin: 0 0 1.15em; text-align: justify; hyphens: auto; }
 
+/* ---- inline emphasis ------------------------------------------------ */
+.ltx_font_bold { font-weight: 700; }
+.ltx_font_italic { font-style: italic; }
+.ltx_font_slanted { font-style: oblique; }
+.ltx_font_upright { font-style: normal; }
+.ltx_font_medium { font-weight: 400; }
+.ltx_font_smallcaps { font-variant: small-caps; }
+.ltx_font_typewriter {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+/* ---- lists ------------------------------------------------------------
+   LaTeXML emits <li class="ltx_item" style="list-style-type:none;"> with
+   its own bullet/number as a *sibling* <span class="ltx_tag_item"> before
+   the item's actual content (often a nested <div class="ltx_para"> wrapping
+   one or more <p class="ltx_p">, but sometimes just a bare paragraph or
+   plain text) -- left unstyled, that tag sits inline while the content
+   after it is block-level, so it drops to its own line with a gap above
+   the text instead of hanging beside it. Taking the tag out of flow and
+   reserving space for it with padding works regardless of what shape the
+   item's content takes, unlike flexbox (which would fight multi-paragraph
+   items by trying to lay every child out side by side). */
+ul.ltx_itemize, ol.ltx_enumerate { list-style: none; margin: 0 0 1.15em; padding: 0; }
+li.ltx_item { position: relative; padding-left: 1.6em; }
+li.ltx_item > .ltx_tag_item { position: absolute; left: 0; top: 0; white-space: nowrap; }
+
 /* ---- figures / tables ---------------------------------------------- */
 figure.ltx_figure, figure.ltx_table, .ltx_float {
   margin: 2em auto;
