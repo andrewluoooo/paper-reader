@@ -35,6 +35,7 @@ ICONS = {
     "circle-half": '<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/>',
     "edit": '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
     "message": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    "chevron-right": '<polyline points="9 6 15 12 9 18"/>',
 }
 
 
@@ -474,6 +475,42 @@ html.sidebar-left-collapsed .reader-sidebar-toggle { display: inline-flex; }
   font-size: 0.85em;
 }
 .reader-popover[hidden] { display: none; }
+.reader-popover-wide { width: 290px; }
+.reader-popover-section-label {
+  color: var(--muted);
+  font-size: 0.8em;
+  font-weight: 600;
+  margin: 0 0 0.6em;
+}
+.reader-popover-section-label + .reader-popover-section-label,
+.reader-theme-grid + .reader-popover-section-label { margin-top: 1.1em; }
+.reader-theme-grid { display: flex; gap: 0.6em; margin-bottom: 0.4em; }
+.reader-theme-card {
+  flex: 1;
+  display: flex; flex-direction: column; align-items: center; gap: 0.5em;
+  border: 2px solid var(--rule); border-radius: 9px;
+  background: var(--control-bg); color: var(--fg);
+  padding: 0.6em 0.3em 0.55em;
+  cursor: pointer;
+  font-family: var(--reader-font-sans);
+  font-size: 0.85em;
+}
+.reader-theme-card:hover { border-color: var(--muted); }
+.reader-theme-card.active { border-color: var(--link); }
+.reader-theme-swatch {
+  width: 100%; height: 34px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center; gap: 0.2em;
+}
+.reader-theme-swatch-light { background: #ffffff; color: #1a1a1a; border: 1px solid var(--rule); }
+.reader-theme-swatch-dark { background: #161513; color: #ece9e2; }
+.reader-theme-swatch-auto {
+  background: linear-gradient(90deg, #ffffff 50%, #161513 50%); color: #1a1a1a;
+  border: 1px solid var(--rule);
+}
+.reader-theme-swatch-auto svg:last-child { color: #ece9e2; }
+.reader-popover-card {
+  border: 1px solid var(--rule); border-radius: 9px; padding: 0.85em 0.9em;
+}
 .reader-popover-row {
   display: flex;
   align-items: center;
@@ -482,25 +519,23 @@ html.sidebar-left-collapsed .reader-sidebar-toggle { display: inline-flex; }
 }
 .reader-popover-row:last-child { margin-bottom: 0; }
 .reader-popover-label { color: var(--muted); }
-.reader-seg {
-  display: inline-flex;
-  border: 1px solid var(--rule);
-  border-radius: 7px;
-  overflow: hidden;
+.reader-popover-row-click { cursor: pointer; }
+.reader-popover-value-btn {
+  display: inline-flex; align-items: center; gap: 0.3em; color: var(--fg);
 }
-.reader-seg button {
-  border: none;
-  background: var(--control-bg);
-  color: var(--fg);
-  padding: 0.4em 0.7em;
-  cursor: pointer;
-  font-family: var(--reader-font-sans);
-  font-size: 0.95em;
-  border-right: 1px solid var(--rule);
+.reader-popover-value-btn svg { color: var(--muted); }
+.reader-typeface-menu {
+  display: flex; flex-direction: column; gap: 0.15em;
+  margin: -0.3em 0 0.9em; padding-bottom: 0.7em; border-bottom: 1px solid var(--rule);
 }
-.reader-seg button:last-child { border-right: none; }
-.reader-seg button:hover { background: var(--control-hover-bg); }
-.reader-seg button.active { background: var(--link); color: #fff; }
+.reader-typeface-menu[hidden] { display: none; }
+.reader-typeface-menu button {
+  text-align: left; border: none; background: none; color: var(--fg);
+  padding: 0.4em 0.5em; border-radius: 6px; cursor: pointer;
+  font-family: var(--reader-font-sans); font-size: 0.95em;
+}
+.reader-typeface-menu button:hover { background: var(--control-hover-bg); }
+.reader-typeface-menu button.active { background: var(--link); color: #fff; }
 .reader-stepper { display: inline-flex; align-items: center; gap: 0.6em; }
 .reader-stepper button {
   width: 26px; height: 26px; border-radius: 999px;
@@ -1076,36 +1111,101 @@ READER_SCRIPT = """
   }
 
   /* ---------------------------------------------------------- text style */
+  var WIDTH_STEPS = [
+    { value: "560px", label: "Narrow" },
+    { value: "700px", label: "Default" },
+    { value: "900px", label: "Wide" }
+  ];
+  var FAMILY_LABELS = { serif: "Serif", sans: "Sans-serif" };
+  var LINE_HEIGHT_MIN = 1.3;
+  var LINE_HEIGHT_MAX = 2.0;
+  var LINE_HEIGHT_STEP = 0.05;
+
+  function fmtLineHeight(v) {
+    return (Math.round(v * 100) / 100).toString();
+  }
+
   function initTextStyle() {
     var s = loadSettings();
     var sizeVal = parseInt(s.fontSize, 10) || 19;
     var family = s.fontFamily || "serif";
     var width = s.maxWidth || "700px";
+    var lineHeightVal = parseFloat(s.lineHeight) || 1.65;
+    var themeVal = s.theme || "auto";
 
     var btn = document.getElementById("textStyleBtn");
     var pop = document.getElementById("textStylePopover");
     var sizeLabel = document.getElementById("fontSizeLabel");
-    if (sizeLabel) sizeLabel.textContent = sizeVal + "px";
+    var lineHeightLabel = document.getElementById("lineHeightLabel");
+    var maxWidthLabel = document.getElementById("maxWidthLabel");
+    var typefaceValueLabel = document.getElementById("typefaceValueLabel");
+    var typefaceRow = document.getElementById("typefaceRow");
+    var typefaceMenu = document.getElementById("typefaceMenu");
+    var themeGrid = document.getElementById("themeGrid");
 
-    function setActiveSeg(container, value) {
+    if (sizeLabel) sizeLabel.textContent = sizeVal + "px";
+    if (lineHeightLabel) lineHeightLabel.textContent = fmtLineHeight(lineHeightVal);
+    var widthIdx = Math.max(0, WIDTH_STEPS.map(function (w) { return w.value; }).indexOf(width));
+    if (maxWidthLabel) maxWidthLabel.textContent = WIDTH_STEPS[widthIdx].label;
+    if (typefaceValueLabel) typefaceValueLabel.textContent = FAMILY_LABELS[family] || "Serif";
+
+    function setActive(container, value) {
       container.querySelectorAll("button").forEach(function (b) {
         b.classList.toggle("active", b.dataset.value === value);
       });
     }
-    var famSeg = document.getElementById("fontFamilySeg");
-    var widthSeg = document.getElementById("maxWidthSeg");
-    if (famSeg) setActiveSeg(famSeg, family);
-    if (widthSeg) setActiveSeg(widthSeg, width);
+    if (themeGrid) setActive(themeGrid, themeVal);
+    if (typefaceMenu) setActive(typefaceMenu, family);
 
+    function closePopover() {
+      pop.hidden = true;
+      if (typefaceMenu) typefaceMenu.hidden = true;
+    }
     if (btn && pop) {
       btn.addEventListener("click", function (e) {
         e.stopPropagation();
+        var willOpen = pop.hidden;
         pop.hidden = !pop.hidden;
+        if (!willOpen && typefaceMenu) typefaceMenu.hidden = true;
       });
       document.addEventListener("click", function (e) {
-        if (!pop.hidden && !pop.contains(e.target) && e.target !== btn) pop.hidden = true;
+        if (!pop.hidden && !pop.contains(e.target) && e.target !== btn) closePopover();
       });
     }
+
+    if (themeGrid) {
+      themeGrid.querySelectorAll("button").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var val = b.dataset.value;
+          themeVal = val;
+          saveSettings({ theme: val });
+          applyTheme(val);
+          setActive(themeGrid, val);
+        });
+      });
+    }
+
+    if (typefaceRow && typefaceMenu) {
+      typefaceRow.addEventListener("click", function (e) {
+        e.stopPropagation();
+        typefaceMenu.hidden = !typefaceMenu.hidden;
+      });
+      typefaceMenu.querySelectorAll("button").forEach(function (b) {
+        b.addEventListener("click", function (e) {
+          e.stopPropagation();
+          var val = b.dataset.value;
+          family = val;
+          document.documentElement.style.setProperty(
+            "--reader-font-family", val === "sans" ? "var(--reader-font-sans)" : "var(--reader-font-serif)"
+          );
+          saveSettings({ fontFamily: val });
+          setActive(typefaceMenu, val);
+          if (typefaceValueLabel) typefaceValueLabel.textContent = FAMILY_LABELS[val] || "Serif";
+          typefaceMenu.hidden = true;
+        });
+      });
+    }
+
     var decBtn = document.getElementById("fontSizeDec");
     var incBtn = document.getElementById("fontSizeInc");
     function changeSize(delta) {
@@ -1117,29 +1217,30 @@ READER_SCRIPT = """
     if (decBtn) decBtn.addEventListener("click", function () { changeSize(-1); });
     if (incBtn) incBtn.addEventListener("click", function () { changeSize(1); });
 
-    if (famSeg) {
-      famSeg.querySelectorAll("button").forEach(function (b) {
-        b.addEventListener("click", function () {
-          var val = b.dataset.value;
-          document.documentElement.style.setProperty(
-            "--reader-font-family", val === "sans" ? "var(--reader-font-sans)" : "var(--reader-font-serif)"
-          );
-          saveSettings({ fontFamily: val });
-          setActiveSeg(famSeg, val);
-        });
-      });
+    var lhDecBtn = document.getElementById("lineHeightDec");
+    var lhIncBtn = document.getElementById("lineHeightInc");
+    function changeLineHeight(delta) {
+      lineHeightVal = Math.max(LINE_HEIGHT_MIN, Math.min(LINE_HEIGHT_MAX, lineHeightVal + delta));
+      lineHeightVal = Math.round(lineHeightVal * 100) / 100;
+      document.documentElement.style.setProperty("--reader-line-height", String(lineHeightVal));
+      if (lineHeightLabel) lineHeightLabel.textContent = fmtLineHeight(lineHeightVal);
+      saveSettings({ lineHeight: String(lineHeightVal) });
     }
-    if (widthSeg) {
-      widthSeg.querySelectorAll("button").forEach(function (b) {
-        b.addEventListener("click", function () {
-          var val = b.dataset.value;
-          document.documentElement.style.setProperty("--reader-max-width", val);
-          saveSettings({ maxWidth: val });
-          setActiveSeg(widthSeg, val);
-          window.dispatchEvent(new Event("resize"));
-        });
-      });
+    if (lhDecBtn) lhDecBtn.addEventListener("click", function () { changeLineHeight(-LINE_HEIGHT_STEP); });
+    if (lhIncBtn) lhIncBtn.addEventListener("click", function () { changeLineHeight(LINE_HEIGHT_STEP); });
+
+    var mwDecBtn = document.getElementById("maxWidthDec");
+    var mwIncBtn = document.getElementById("maxWidthInc");
+    function changeMaxWidth(delta) {
+      widthIdx = Math.max(0, Math.min(WIDTH_STEPS.length - 1, widthIdx + delta));
+      var step = WIDTH_STEPS[widthIdx];
+      document.documentElement.style.setProperty("--reader-max-width", step.value);
+      if (maxWidthLabel) maxWidthLabel.textContent = step.label;
+      saveSettings({ maxWidth: step.value });
+      window.dispatchEvent(new Event("resize"));
     }
+    if (mwDecBtn) mwDecBtn.addEventListener("click", function () { changeMaxWidth(-1); });
+    if (mwIncBtn) mwIncBtn.addEventListener("click", function () { changeMaxWidth(1); });
   }
 
   /* -------------------------------------------------------------- sidebar */
@@ -2847,29 +2948,59 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
   <button class="reader-notes-toggle" id="sidebarRightToggleBtn" aria-label="Show highlights and notes">{_icon("edit")}</button>
 </div>
 
-<div class="reader-popover" id="textStylePopover" hidden>
-  <div class="reader-popover-row">
-    <span class="reader-popover-label">Size</span>
-    <span class="reader-stepper">
-      <button id="fontSizeDec" aria-label="Decrease text size">&minus;</button>
-      <span id="fontSizeLabel">19px</span>
-      <button id="fontSizeInc" aria-label="Increase text size">&plus;</button>
-    </span>
+<div class="reader-popover reader-popover-wide" id="textStylePopover" hidden>
+  <div class="reader-popover-section-label">System theme</div>
+  <div class="reader-theme-grid" id="themeGrid">
+    <button type="button" class="reader-theme-card" data-value="light" aria-label="Light theme">
+      <span class="reader-theme-swatch reader-theme-swatch-light">{_icon("sun", 20)}</span>
+      <span>Light</span>
+    </button>
+    <button type="button" class="reader-theme-card" data-value="dark" aria-label="Dark theme">
+      <span class="reader-theme-swatch reader-theme-swatch-dark">{_icon("moon", 20)}</span>
+      <span>Dark</span>
+    </button>
+    <button type="button" class="reader-theme-card" data-value="auto" aria-label="Auto theme">
+      <span class="reader-theme-swatch reader-theme-swatch-auto">{_icon("sun", 16)}{_icon("moon", 16)}</span>
+      <span>Auto</span>
+    </button>
   </div>
-  <div class="reader-popover-row">
-    <span class="reader-popover-label">Font</span>
-    <span class="reader-seg" id="fontFamilySeg">
-      <button data-value="serif">Serif</button>
-      <button data-value="sans">Sans</button>
-    </span>
-  </div>
-  <div class="reader-popover-row">
-    <span class="reader-popover-label">Width</span>
-    <span class="reader-seg" id="maxWidthSeg">
-      <button data-value="560px">Narrow</button>
-      <button data-value="700px">Default</button>
-      <button data-value="900px">Wide</button>
-    </span>
+
+  <div class="reader-popover-section-label">Text styles</div>
+  <div class="reader-popover-card">
+    <div class="reader-popover-row reader-popover-row-click" id="typefaceRow">
+      <span class="reader-popover-label">Typeface</span>
+      <span class="reader-popover-value-btn">
+        <span id="typefaceValueLabel">Serif</span>{_icon("chevron-right", 14)}
+      </span>
+    </div>
+    <div class="reader-typeface-menu" id="typefaceMenu" hidden>
+      <button type="button" data-value="serif">Serif</button>
+      <button type="button" data-value="sans">Sans-serif</button>
+    </div>
+    <div class="reader-popover-row">
+      <span class="reader-popover-label">Font size</span>
+      <span class="reader-stepper">
+        <button id="fontSizeDec" aria-label="Decrease text size">&minus;</button>
+        <span id="fontSizeLabel">19px</span>
+        <button id="fontSizeInc" aria-label="Increase text size">&plus;</button>
+      </span>
+    </div>
+    <div class="reader-popover-row">
+      <span class="reader-popover-label">Line spacing</span>
+      <span class="reader-stepper">
+        <button id="lineHeightDec" aria-label="Decrease line spacing">&minus;</button>
+        <span id="lineHeightLabel">1.65</span>
+        <button id="lineHeightInc" aria-label="Increase line spacing">&plus;</button>
+      </span>
+    </div>
+    <div class="reader-popover-row">
+      <span class="reader-popover-label">Line width</span>
+      <span class="reader-stepper">
+        <button id="maxWidthDec" aria-label="Decrease line width">&minus;</button>
+        <span id="maxWidthLabel">Default</span>
+        <button id="maxWidthInc" aria-label="Increase line width">&plus;</button>
+      </span>
+    </div>
   </div>
 </div>
 
