@@ -318,12 +318,6 @@ button, input, select, textarea { font-family: inherit; }
 input[type=file] { display: none; }
 .status { font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; font-size: 0.88em; margin-bottom: 1em; min-height: 1.3em; }
 .status.error { color: var(--error); }
-.status.loading { color: var(--muted); }
-.spinner {
-  display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid var(--rule);
-  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite;
-  margin-right: 0.5em; vertical-align: -0.15em;
-}
 @keyframes spin { to { transform: rotate(360deg); } }
 .search-row { display: flex; gap: 0.6em; margin-bottom: 1.2em; animation: slideDown 0.15s ease; }
 .search-row[hidden] { display: none; }
@@ -525,6 +519,37 @@ input[type=file] { display: none; }
 @keyframes undoToastIn { from { opacity: 0; transform: translateY(8px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes undoToastOut { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(6px); } }
 
+/* plain (non-undo) notices, e.g. upload progress/result -- same toast
+   stack, just full-width wrapping text instead of a truncated row with
+   an action button */
+.undo-toast.notice-toast { align-items: flex-start; }
+.undo-toast.notice-toast.error { background: #b3261e; color: #fff; }
+.undo-toast.notice-toast a { color: inherit; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.undo-toast-spinner {
+  flex-shrink: 0; display: inline-block; width: 0.9em; height: 0.9em;
+  border: 2px solid color-mix(in srgb, var(--bg) 30%, transparent); border-top-color: var(--bg);
+  border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+
+/* -------------------------------------------------------- pull to refresh */
+.pull-refresh-indicator {
+  position: fixed; top: 0.9em; left: 50%; transform: translateX(-50%) translateY(-6px);
+  z-index: 300; display: flex; align-items: center; gap: 0.5em;
+  background: var(--card-bg); border: 1px solid var(--rule); border-radius: 999px;
+  padding: 0.45em 1em; font-size: 0.82em; color: var(--muted);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.pull-refresh-indicator[hidden] { display: none; }
+.pull-refresh-indicator.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+.pull-refresh-spinner {
+  width: 0.9em; height: 0.9em; border: 2px solid var(--rule); border-top-color: var(--accent);
+  border-radius: 50%; flex-shrink: 0;
+}
+.pull-refresh-spinner.spinning { animation: spin 0.6s linear infinite; }
+
 @media (max-width: 1000px) { .info-panel { display: none !important; } }
 @media (max-width: 720px) { .sidebar { display: none; } }
 </style>
@@ -601,6 +626,11 @@ input[type=file] { display: none; }
 </div>
 
 <div class="undo-toast-container" id="undoToasts"></div>
+
+<div class="pull-refresh-indicator" id="pullRefreshIndicator" hidden>
+  <span class="pull-refresh-spinner" id="pullRefreshSpinner"></span>
+  <span id="pullRefreshLabel">Pull to refresh</span>
+</div>
 
 <script>
 (function () {
@@ -831,6 +861,26 @@ input[type=file] { display: none; }
     });
 
     pendingActions[key] = { timer: timer, toast: toast, onCommit: onCommit };
+  }
+
+  // A plain (no undo, no countdown) notice in the same toast stack --
+  // used for upload progress/result. Returns the toast element so the
+  // caller can update it in place (e.g. loading -> success) instead of
+  // stacking a separate toast for each step of one upload.
+  function showNoticeToast(html, cls, autoHideMs, existing) {
+    var container = document.getElementById("undoToasts");
+    var toast = existing || document.createElement("div");
+    toast.className = "undo-toast notice-toast" + (cls ? " " + cls : "");
+    toast.innerHTML = html;
+    if (!existing) container.appendChild(toast);
+    if (toast._hideTimer) { clearTimeout(toast._hideTimer); toast._hideTimer = null; }
+    if (autoHideMs) {
+      toast._hideTimer = setTimeout(function () {
+        toast.classList.add("leaving");
+        setTimeout(function () { toast.remove(); }, 150);
+      }, autoHideMs);
+    }
+    return toast;
   }
 
   function commitPaperStatus(p, status) {
@@ -1197,33 +1247,101 @@ input[type=file] { display: none; }
     });
   }
 
+  /* -------------------------------------------------------- pull to refresh */
+  // Scrolling up past a small threshold while already at the top of the
+  // page reloads the paper list, mirroring the mobile "pull to refresh"
+  // gesture with a mouse wheel / trackpad. Only counts while the page
+  // itself is at scrollY 0 and the wheel is over the main content, not
+  // while scrolling inside the sidebar or info panel.
+  function initPullToRefresh() {
+    var indicator = document.getElementById("pullRefreshIndicator");
+    var label = document.getElementById("pullRefreshLabel");
+    var spinner = document.getElementById("pullRefreshSpinner");
+    if (!indicator) return;
+    var PULL_THRESHOLD = 90;
+    var pullAmount = 0;
+    var cooldownUntil = 0;
+    var hideTimer = null;
+
+    function show(text, spinning) {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      indicator.hidden = false;
+      void indicator.offsetWidth; // force reflow so the fade-in transition plays
+      indicator.classList.add("visible");
+      label.textContent = text;
+      spinner.classList.toggle("spinning", !!spinning);
+    }
+    function hide(delay) {
+      if (hideTimer) clearTimeout(hideTimer);
+      hideTimer = setTimeout(function () {
+        indicator.classList.remove("visible");
+        setTimeout(function () { indicator.hidden = true; }, 150);
+      }, delay || 0);
+    }
+
+    window.addEventListener("wheel", function (e) {
+      if (Date.now() < cooldownUntil) return;
+      if (e.target && e.target.closest && e.target.closest(".sidebar, .info-panel")) return;
+      if (window.scrollY > 0) {
+        if (pullAmount) { pullAmount = 0; hide(); }
+        return;
+      }
+      if (e.deltaY < 0) {
+        pullAmount += -e.deltaY;
+        if (pullAmount < PULL_THRESHOLD) {
+          show("Pull to refresh", false);
+        } else {
+          pullAmount = 0;
+          cooldownUntil = Date.now() + 1500;
+          show("Refreshing\\u2026", true);
+          loadPapers();
+          hide(600);
+        }
+      } else if (e.deltaY > 0 && pullAmount) {
+        pullAmount = 0;
+        hide();
+      }
+    }, { passive: true });
+  }
+
   function setStatus(msg, cls) {
     var el = document.getElementById("status");
     el.className = "status" + (cls ? " " + cls : "");
     el.textContent = msg;
   }
-  function setStatusLoading(msg) {
-    var el = document.getElementById("status");
-    el.className = "status loading";
-    el.innerHTML = '<span class="spinner"></span>' + msg;
+
+  function escHtml(s) {
+    var d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
   }
 
   function upload(file) {
-    setStatusLoading('Parsing "' + file.name + '"\\u2026 this can take up to a minute.');
+    var toast = showNoticeToast(
+      '<span class="undo-toast-spinner"></span>Parsing "' + escHtml(file.name) + '"\\u2026 this can take up to a minute.',
+      "loading"
+    );
     fetch("/api/upload?filename=" + encodeURIComponent(file.name), { method: "POST", body: file })
       .then(function (r) {
         return r.json().then(function (data) { return { ok: r.ok, data: data }; });
       })
       .then(function (res) {
         if (!res.ok) {
-          setStatus('Could not parse "' + file.name + '": ' + (res.data.error || "unknown error"), "error");
+          showNoticeToast(
+            'Could not parse "' + escHtml(file.name) + '": ' + escHtml(res.data.error || "unknown error"),
+            "error", 8000, toast
+          );
           return;
         }
-        setStatus("");
+        var openHref = "/library/" + encodeURIComponent(res.data.id) + ".html";
+        showNoticeToast(
+          'Added "' + escHtml(res.data.title || file.name) + '" to your library. <a href="' + openHref + '">Open it</a>',
+          "success", 8000, toast
+        );
         loadPapers();
       })
       .catch(function (e) {
-        setStatus("Upload failed: " + e.message, "error");
+        showNoticeToast("Upload failed: " + escHtml(e.message), "error", 8000, toast);
       });
   }
 
@@ -1345,6 +1463,7 @@ input[type=file] { display: none; }
   });
 
   initTheme();
+  initPullToRefresh();
   loadPapers();
 })();
 </script>
