@@ -254,6 +254,13 @@ figure.ltx_figure, figure.ltx_table, .ltx_float {
   max-width: 100%;
 }
 figure.ltx_figure img, .ltx_graphics { max-width: 100%; height: auto; }
+/* LaTeXML renders some diagrams (tikz etc.) as a native inline <svg> --
+   _strip_latexml_scaling_wrappers() removes the ltx_transformed_* wrapper
+   that would otherwise scale it, so without this the SVG paints at its
+   literal width/height attributes and spills out of the reading column.
+   A sized-but-viewBox-less root <svg> scales proportionally under CSS
+   width/height constraints the same way an <img> does. */
+svg.ltx_picture, .ltx_picture { max-width: 100%; height: auto; display: block; margin: 0 auto; }
 figcaption.ltx_caption, .ltx_caption {
   font-size: 0.92em;
   color: var(--muted);
