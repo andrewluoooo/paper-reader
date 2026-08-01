@@ -274,7 +274,8 @@ body {
   display: flex; align-items: center; gap: 1.8em; border-bottom: 1px solid var(--rule); margin-bottom: 1.3em;
   font-family: -apple-system, "Segoe UI", sans-serif;
 }
-.topbar-title { font-weight: 700; font-size: 0.95em; padding-bottom: 0.75em; }
+.topbar-title { display: flex; align-items: center; gap: 0.3em; font-weight: 700; font-size: 0.95em; padding-bottom: 0.75em; color: var(--fg); }
+.topbar-title svg { width: 11px; height: 11px; color: var(--muted); }
 .tabs-row { display: flex; align-items: flex-end; gap: 1.6em; flex: 1; }
 .tab-btn {
   background: none; border: none; padding: 0 0 0.7em; margin-bottom: -1px; cursor: pointer;
@@ -308,14 +309,17 @@ input[type=file] { display: none; }
   background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
   font-size: 0.95em;
 }
+.sort-control { position: relative; display: flex; align-items: center; flex-shrink: 0; margin-bottom: 0.6em; border-radius: 6px; }
+.sort-control:hover { background: var(--rule); }
+.sort-control svg.sort-lead-icon { position: absolute; left: 0.5em; width: 12px; height: 12px; color: var(--muted); pointer-events: none; }
 .sort-select {
-  flex-shrink: 0; padding: 0.55em 2.1em 0.55em 0.9em; border-radius: 8px; border: 1px solid var(--rule);
-  background: var(--card-bg); color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif;
-  font-size: 0.85em; cursor: pointer;
+  flex-shrink: 0; padding: 0.4em 1.7em 0.4em 1.7em; border-radius: 6px; border: none;
+  background: none; color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.85em; font-weight: 600; cursor: pointer;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235b5b5b' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 0.8em center; appearance: none; -webkit-appearance: none;
+  background-repeat: no-repeat; background-position: right 0.55em center; appearance: none; -webkit-appearance: none;
 }
-.sort-select:hover { border-color: var(--accent); }
+.sort-control:hover .sort-select { color: var(--fg); }
 .paper-list { display: flex; flex-direction: column; gap: 0.6em; }
 .paper-card {
   display: flex; align-items: flex-start; gap: 0.9em;
@@ -323,13 +327,20 @@ input[type=file] { display: none; }
   background: var(--card-bg);
 }
 .paper-card:hover { border-color: var(--accent); }
+.paper-card.selected {
+  border-color: var(--rule); background: var(--rule);
+  border-left: 3px solid var(--accent); padding-left: calc(1.1em - 2px);
+}
 .paper-thumb {
   flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   color: #fff; font-weight: 700; font-size: 1.05em; font-family: -apple-system, "Segoe UI", sans-serif;
 }
 .paper-card-link { display: block; flex: 1; min-width: 0; text-decoration: none; color: inherit; cursor: pointer; }
-.paper-title { font-size: 1.02em; font-weight: 700; margin: 0 0 0.22em; line-height: 1.3; }
+.paper-title {
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 1.02em; font-weight: 700; margin: 0 0 0.22em; line-height: 1.3;
+}
 .paper-summary {
   color: var(--muted); font-size: 0.85em; font-family: -apple-system, "Segoe UI", sans-serif;
   margin-bottom: 0.3em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -347,7 +358,18 @@ input[type=file] { display: none; }
 .paper-action-btn:hover { color: var(--fg); background: var(--rule); }
 .paper-action-btn.active { color: var(--accent); }
 .paper-action-btn svg { width: 16px; height: 16px; display: block; }
-.paper-delete-btn:hover { color: var(--error); background: rgba(179, 38, 30, 0.1); }
+.more-wrap { position: relative; }
+.more-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); min-width: 170px; z-index: 30; overflow: hidden;
+  background: var(--card-bg); border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+}
+.more-menu button {
+  display: block; width: 100%; text-align: left; padding: 0.6em 0.9em; border: none; background: none;
+  color: var(--fg); font-family: -apple-system, "Segoe UI", sans-serif; font-size: 0.85em; cursor: pointer;
+}
+.more-menu button:hover { background: var(--rule); }
+.more-menu button.danger { color: var(--error); }
 .empty-state { color: var(--muted); font-family: -apple-system, "Segoe UI", sans-serif; text-align: center; padding: 3em 0; }
 
 /* -------------------------------------------------------------- tags UI (info panel) */
@@ -450,17 +472,23 @@ input[type=file] { display: none; }
 
   <main class="main-col">
     <div class="main-topbar">
-      <div class="topbar-title">Library</div>
+      <div class="topbar-title">
+        Library
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+      </div>
       <div class="tabs-row" role="tablist">
         <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
         <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
         <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
       </div>
-      <select id="sortSelect" class="sort-select" aria-label="Sort papers by">
-        <option value="added">Most recently added</option>
-        <option value="opened">Most recently opened</option>
-        <option value="title">Title (A&ndash;Z)</option>
-      </select>
+      <div class="sort-control">
+        <svg class="sort-lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="6 13 12 19 18 13"></polyline></svg>
+        <select id="sortSelect" class="sort-select" aria-label="Sort papers by">
+          <option value="added">Most recently added</option>
+          <option value="opened">Most recently opened</option>
+          <option value="title">Title (A&ndash;Z)</option>
+        </select>
+      </div>
     </div>
 
     <div class="search-row" id="searchRow" hidden>
@@ -493,11 +521,9 @@ input[type=file] { display: none; }
 <script>
 (function () {
   var papers = [];
-  var TRASH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+  var MORE_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-    '<polyline points="3 6 5 6 21 6"></polyline>' +
-    '<path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>' +
-    '<line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
+    '<circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg>';
   var INBOX_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline>' +
@@ -509,9 +535,6 @@ input[type=file] { display: none; }
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect>' +
     '<line x1="10" y1="12" x2="14" y2="12"></line></svg>';
-  var INFO_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
-    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-    '<circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>';
   var BOOK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>' +
@@ -727,6 +750,50 @@ input[type=file] { display: none; }
     selectedPaper = null;
     document.getElementById("infoPanel").hidden = true;
   }
+
+  var openMoreWrap = null;
+  function closeMoreMenu() {
+    if (openMoreWrap) {
+      var existing = openMoreWrap.querySelector(".more-menu");
+      if (existing) existing.remove();
+      openMoreWrap = null;
+    }
+  }
+  function toggleMoreMenu(wrap, p) {
+    if (openMoreWrap === wrap) { closeMoreMenu(); return; }
+    closeMoreMenu();
+    var menu = document.createElement("div");
+    menu.className = "more-menu";
+    var infoItem = document.createElement("button");
+    infoItem.type = "button";
+    infoItem.textContent = "Show info";
+    infoItem.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMoreMenu();
+      if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
+      else openInfoPanel(p);
+      render(document.getElementById("searchBox").value);
+    });
+    var removeItem = document.createElement("button");
+    removeItem.type = "button";
+    removeItem.className = "danger";
+    removeItem.textContent = "Remove from library";
+    removeItem.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      closeMoreMenu();
+      removePaper(p);
+    });
+    menu.appendChild(infoItem);
+    menu.appendChild(removeItem);
+    wrap.appendChild(menu);
+    openMoreWrap = wrap;
+  }
+  document.addEventListener("click", function (e) {
+    if (openMoreWrap && !openMoreWrap.contains(e.target)) closeMoreMenu();
+  });
+
   function renderInfoPanel(p) {
     var body = document.getElementById("infoPanelBody");
     body.innerHTML = "";
@@ -828,9 +895,10 @@ input[type=file] { display: none; }
       return;
     }
     list.innerHTML = "";
+    openMoreWrap = null;
     filtered.forEach(function (p) {
       var card = document.createElement("div");
-      card.className = "paper-card";
+      card.className = "paper-card" + (selectedPaper && selectedPaper.id === p.id ? " selected" : "");
 
       var thumb = document.createElement("div");
       thumb.className = "paper-thumb";
@@ -870,20 +938,21 @@ input[type=file] { display: none; }
       var actions = document.createElement("div");
       actions.className = "paper-actions";
 
-      var infoBtn = document.createElement("button");
-      infoBtn.type = "button";
-      infoBtn.className = "paper-action-btn" + (selectedPaper && selectedPaper.id === p.id ? " active" : "");
-      infoBtn.setAttribute("aria-label", "Show info");
-      infoBtn.title = "Show info";
-      infoBtn.innerHTML = INFO_ICON;
-      infoBtn.addEventListener("click", function (e) {
+      var moreWrap = document.createElement("div");
+      moreWrap.className = "more-wrap";
+      var moreBtn = document.createElement("button");
+      moreBtn.type = "button";
+      moreBtn.className = "paper-action-btn";
+      moreBtn.setAttribute("aria-label", "More actions");
+      moreBtn.title = "More actions";
+      moreBtn.innerHTML = MORE_ICON;
+      moreBtn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
-        if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
-        else openInfoPanel(p);
-        render(document.getElementById("searchBox").value);
+        toggleMoreMenu(moreWrap, p);
       });
-      actions.appendChild(infoBtn);
+      moreWrap.appendChild(moreBtn);
+      actions.appendChild(moreWrap);
 
       STATUS_ACTIONS.forEach(function (spec) {
         var btn = document.createElement("button");
@@ -899,19 +968,6 @@ input[type=file] { display: none; }
         });
         actions.appendChild(btn);
       });
-
-      var delBtn = document.createElement("button");
-      delBtn.type = "button";
-      delBtn.className = "paper-action-btn paper-delete-btn";
-      delBtn.setAttribute("aria-label", "Remove from library");
-      delBtn.title = "Remove from library";
-      delBtn.innerHTML = TRASH_ICON;
-      delBtn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        removePaper(p);
-      });
-      actions.appendChild(delBtn);
 
       card.appendChild(actions);
       list.appendChild(card);
