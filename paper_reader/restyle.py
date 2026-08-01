@@ -347,6 +347,7 @@ sup.ltx_note { font-size: 0.8em; }
 
 .meta {
   color: var(--muted);
+  font-family: var(--reader-font-sans);
   font-size: 0.85em;
   margin-bottom: 3em;
   padding-bottom: 1.5em;
