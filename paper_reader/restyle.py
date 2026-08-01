@@ -3235,7 +3235,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 <div class="reader-drop-overlay" id="readerDropOverlay" hidden>
   <div class="reader-drop-overlay-card">
     <strong>Drop to add to your library</strong>
-    <div>.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page</div>
+    <div>.tex, .zip, .tar.gz, .tgz, .pdf &mdash; or a saved .html paper page</div>
   </div>
 </div>
 <div class="reader-upload-toast" id="readerUploadToast" hidden></div>

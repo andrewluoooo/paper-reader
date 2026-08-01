@@ -59,8 +59,8 @@ pip install -e .
 
 **Library mode** -- a local web app where you drag and drop LaTeX sources
 (`.tex`, `.zip`, `.tar.gz`, `.tgz`, `.tar` -- e.g. an arXiv "Other formats ->
-Source" download) or a saved HTML paper page (`.html`/`.htm`) and get a
-searchable library of reader pages:
+Source" download), a saved HTML paper page (`.html`/`.htm`), or a plain
+`.pdf`, and get a searchable library of reader pages:
 
 ```bash
 paper-reader --library
@@ -106,6 +106,23 @@ layouts may not extract perfectly. Author names in particular depend on the
 page having rendered them server-side into the static HTML; some publisher
 pages load the author list via client-side JavaScript after the fact, which
 won't be present in a saved snapshot.
+
+### Importing a PDF
+
+When you don't have a LaTeX source or an HTML page -- just a `.pdf` -- drop
+it on the library (or pass it to the CLI) directly. Unlike the LaTeX and
+HTML paths, a PDF carries no semantic markup at all, so the title, authors,
+section headings, abstract, and references are reconstructed from layout:
+font size, boldness, and position on the page, with a two-column-aware
+reading order for the common academic two-column layout. The resulting page
+gets the same reflowable text, theming, and highlighting as any other paper
+in the library.
+
+This is inherently more heuristic than the LaTeX or HTML paths -- unusual
+layouts, single-column papers with atypical heading styles, or PDFs that are
+scanned images without a real text layer may not extract cleanly. Author
+names are a rough split of whatever text sits directly under the title, with
+no affiliation/email parsing.
 
 ## Notes
 
