@@ -2596,6 +2596,33 @@ READER_SCRIPT = """
     });
   }
 
+  /* ------------------------------------------------------- in-page anchor nav */
+  // Every internal "#id" link -- outline entries, citations, figure/table
+  // cross-references, footnotes -- is really just a same-page scroll, but
+  // the browser's default anchor navigation pushes a fresh history entry
+  // for each one. Left alone, hitting Back after reading for a while just
+  // unwinds through every link you happened to click instead of leaving
+  // the page, which is what people actually expect. Scroll manually and
+  // swap the hash in with replaceState (not pushState) so the entry that
+  // was already on the stack -- wherever you arrived here from, normally
+  // the library -- is still exactly one Back press away no matter how
+  // much in-page jumping happened in between.
+  function initAnchorNav() {
+    document.addEventListener("click", function (e) {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      var a = e.target.closest && e.target.closest('a[href^="#"]');
+      if (!a) return;
+      var hash = a.getAttribute("href");
+      if (!hash || hash.length < 2) return;
+      var target;
+      try { target = document.getElementById(decodeURIComponent(hash.slice(1))); } catch (err) { target = null; }
+      if (!target) return;
+      e.preventDefault();
+      target.scrollIntoView({ block: "start" });
+      history.replaceState(null, "", hash);
+    });
+  }
+
   /* -------------------------------------------------- whole-page drop upload */
   // Same drag-and-drop-to-upload flow as the library home page, so adding
   // another paper doesn't require leaving whatever you're currently
@@ -2684,6 +2711,7 @@ READER_SCRIPT = """
     initReadingPosition();
     initDropUpload();
     initKeyboardShortcuts();
+    initAnchorNav();
   });
 })();
 """
