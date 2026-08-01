@@ -1078,6 +1078,17 @@ input[type=file] { display: none; }
     if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) closeInfoPanel();
   });
 
+  /* refresh the list (and re-sort by "most recently opened", etc.) whenever
+     the user comes back to this page -- browser back/forward can restore it
+     from bfcache without re-running this script, and it may have been left
+     open in a background tab while a paper was read elsewhere */
+  window.addEventListener("pageshow", function (e) {
+    if (e.persisted) loadPapers();
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible") loadPapers();
+  });
+
   initTheme();
   loadPapers();
 })();
@@ -1152,6 +1163,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        # Papers get tagged/moved/opened from other tabs and pages all the
+        # time -- never let the browser serve a stale cached copy of the
+        # library index, the home page, or a reader page.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
