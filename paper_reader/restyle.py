@@ -922,6 +922,39 @@ a.ltx_ref[href^="#bib."] { text-decoration-style: dotted; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* ---- whole-page drag-and-drop upload (matches the library home page) -- */
+.reader-drop-overlay {
+  position: fixed; inset: 0; background: rgba(26, 86, 219, 0.08);
+  border: 3px dashed var(--link); z-index: 999;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+.reader-drop-overlay[hidden] { display: none; }
+.reader-drop-overlay-card {
+  background: var(--control-bg); border: 1px solid var(--rule); border-radius: 14px; padding: 2.2em 3em;
+  text-align: center; font-family: var(--reader-font-sans);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.reader-drop-overlay-card strong { display: block; font-size: 1.2em; margin-bottom: 0.4em; color: var(--fg); }
+.reader-drop-overlay-card div { color: var(--muted); font-size: 0.88em; }
+
+.reader-upload-toast {
+  position: fixed; left: 1.2em; bottom: 1.2em; z-index: 200; max-width: 340px;
+  background: var(--fg); color: var(--bg);
+  border-radius: 10px; padding: 0.75em 1em;
+  font-family: var(--reader-font-sans); font-size: 0.85em; line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+}
+.reader-upload-toast[hidden] { display: none; }
+.reader-upload-toast.error { color: #fff; background: #b3261e; }
+.reader-upload-toast a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.reader-upload-spinner {
+  display: inline-block; width: 0.9em; height: 0.9em; border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: currentColor; border-radius: 50%; animation: readerUploadSpin 0.7s linear infinite;
+  margin-right: 0.5em; vertical-align: -0.15em;
+}
+@keyframes readerUploadSpin { to { transform: rotate(360deg); } }
+
 /* ---- margin comments: notes shown beside their highlight, Notion-style */
 .reader-margin-comments {
   position: absolute;
@@ -2563,6 +2596,77 @@ READER_SCRIPT = """
     });
   }
 
+  /* -------------------------------------------------- whole-page drop upload */
+  // Same drag-and-drop-to-upload flow as the library home page, so adding
+  // another paper doesn't require leaving whatever you're currently
+  // reading. Uploads land in the library's inbox; this page keeps showing
+  // whatever you had open.
+  function initDropUpload() {
+    var overlay = document.getElementById("readerDropOverlay");
+    var toast = document.getElementById("readerUploadToast");
+    if (!overlay || !toast) return;
+
+    function hasFiles(e) {
+      return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1);
+    }
+    var dragCounter = 0;
+    window.addEventListener("dragenter", function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter++;
+      overlay.hidden = false;
+    });
+    window.addEventListener("dragover", function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+    });
+    window.addEventListener("dragleave", function (e) {
+      if (!hasFiles(e)) return;
+      dragCounter--;
+      if (dragCounter <= 0) { dragCounter = 0; overlay.hidden = true; }
+    });
+    window.addEventListener("drop", function (e) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragCounter = 0;
+      overlay.hidden = true;
+      var files = e.dataTransfer.files;
+      if (files && files[0]) uploadToLibrary(files[0]);
+    });
+
+    var hideTimer = null;
+    function showToast(html, cls, autoHideMs) {
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+      toast.innerHTML = html;
+      toast.className = "reader-upload-toast" + (cls ? " " + cls : "");
+      toast.hidden = false;
+      if (autoHideMs) hideTimer = setTimeout(function () { toast.hidden = true; }, autoHideMs);
+    }
+
+    function esc(s) {
+      var d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function uploadToLibrary(file) {
+      showToast('<span class="reader-upload-spinner"></span>Parsing "' + esc(file.name) + '"… this can take up to a minute.', "loading");
+      fetch("/api/upload?filename=" + encodeURIComponent(file.name), { method: "POST", body: file })
+        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+        .then(function (res) {
+          if (!res.ok) {
+            showToast('Could not parse "' + esc(file.name) + '": ' + esc(res.data.error || "unknown error"), "error", 8000);
+            return;
+          }
+          var openHref = "/library/" + encodeURIComponent(res.data.id) + ".html";
+          showToast('Added "' + esc(res.data.title || file.name) + '" to your library. <a href="' + openHref + '">Open it</a>', "success", 8000);
+        })
+        .catch(function (e) {
+          showToast("Upload failed: " + esc(e.message), "error", 8000);
+        });
+    }
+  }
+
   function ready(fn) {
     if (document.readyState !== "loading") fn();
     else document.addEventListener("DOMContentLoaded", fn);
@@ -2578,6 +2682,7 @@ READER_SCRIPT = """
     initProgressBar();
     // initFocusBar(); -- temporarily disabled
     initReadingPosition();
+    initDropUpload();
     initKeyboardShortcuts();
   });
 })();
@@ -3098,6 +3203,14 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
   <div class="reader-ref-preview-body" id="refPreviewBody"></div>
   <div class="reader-ref-preview-caption" id="refPreviewCaption"></div>
 </div>
+
+<div class="reader-drop-overlay" id="readerDropOverlay" hidden>
+  <div class="reader-drop-overlay-card">
+    <strong>Drop to add to your library</strong>
+    <div>.tex, .zip, .tar.gz, .tgz &mdash; or a saved .html paper page</div>
+  </div>
+</div>
+<div class="reader-upload-toast" id="readerUploadToast" hidden></div>
 
 <script>{FIT_SCRIPT}</script>
 <script>{READER_SCRIPT}</script>
