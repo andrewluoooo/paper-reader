@@ -239,8 +239,8 @@ body {
   display: flex; flex-direction: column; padding: 1.1em 0.9em; overflow-y: auto;
   font-family: -apple-system, "Segoe UI", sans-serif;
 }
-.sidebar-top { display: flex; align-items: center; justify-content: space-between; padding: 0 0.3em; margin-bottom: 1.4em; }
-.brand { font-family: Georgia, serif; font-weight: 700; font-size: 1.2em; }
+.sidebar-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6em; padding: 0 0.3em; margin-bottom: 1.4em; }
+.brand { flex: 1; min-width: 0; font-family: Georgia, serif; font-weight: 700; font-size: 1.05em; line-height: 1.25; }
 .sidebar-add-btn { width: 28px; height: 28px; font-size: 1.2em; line-height: 1; }
 .sidebar-nav { display: flex; flex-direction: column; gap: 0.1em; flex: 1; min-height: 0; }
 .nav-item {
@@ -429,7 +429,7 @@ input[type=file] { display: none; }
 <div class="app-shell">
   <aside class="sidebar">
     <div class="sidebar-top">
-      <span class="brand">Reader</span>
+      <span class="brand">Andrew&rsquo;s Paper Library</span>
       <button type="button" class="icon-btn sidebar-add-btn" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source or saved HTML page)">+</button>
     </div>
     <nav class="sidebar-nav">
