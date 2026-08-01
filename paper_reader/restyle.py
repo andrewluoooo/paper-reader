@@ -121,6 +121,8 @@ CSS = """
   --highlight-yellow-line: #e0ab0e; --highlight-green-line: #3ecb7a; --highlight-blue-line: #5b9dea; --highlight-pink-line: #ea6bb3;
 }
 * { box-sizing: border-box; }
+::selection { background-color: var(--highlight-blue); }
+::-moz-selection { background-color: var(--highlight-blue); }
 html, body {
   margin: 0;
   padding: 0;
