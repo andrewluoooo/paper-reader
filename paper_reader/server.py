@@ -1269,7 +1269,7 @@ input[type=file] { display: none; }
     var arrow = document.getElementById("pullRefreshArrow");
     var spinner = document.getElementById("pullRefreshSpinner");
     if (!indicator) return;
-    var PULL_THRESHOLD = 90;
+    var PULL_THRESHOLD = 170;
     var RELEASE_DEBOUNCE_MS = 200;
     var pullAmount = 0;
     var cooldownUntil = 0;
@@ -1297,7 +1297,8 @@ input[type=file] { display: none; }
       spinner.classList.remove("spinning");
       var pct = Math.max(0, Math.min(1, amount / PULL_THRESHOLD));
       arrow.style.transform = "rotate(" + (pct * 180) + "deg)";
-      label.textContent = pct >= 1 ? "Release to refresh" : "Pull to refresh";
+      label.hidden = pct < 1;
+      label.textContent = pct >= 1 ? "Release to refresh" : "";
     }
     function cancelPull() {
       if (releaseTimer) { clearTimeout(releaseTimer); releaseTimer = null; }
@@ -1313,6 +1314,7 @@ input[type=file] { display: none; }
       arrow.hidden = true;
       spinner.hidden = false;
       spinner.classList.add("spinning");
+      label.hidden = false;
       label.textContent = "Refreshing\\u2026";
       loadPapers();
       // Hold the "Refreshing..." state briefly even though the fetch
