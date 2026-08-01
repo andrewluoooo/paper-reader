@@ -366,10 +366,14 @@ sup.ltx_note { font-size: 0.8em; }
   border-right: 1px solid var(--rule);
   padding: 1.5em 0.5em 2em 1.2em;
   font-family: var(--reader-font-sans);
+  transition: flex-basis 0.22s ease, width 0.22s ease, padding-left 0.22s ease,
+    padding-right 0.22s ease, border-right-color 0.22s ease, opacity 0.15s ease;
 }
 html.sidebar-left-collapsed .reader-sidebar {
-  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-right: none; overflow: hidden;
+  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-right-color: transparent;
+  overflow: hidden; opacity: 0;
 }
+html.sidebar-resizing .reader-sidebar, html.sidebar-resizing .reader-sidebar-right { transition: none; }
 .reader-sidebar-resize {
   position: absolute;
   top: 0; bottom: 0; right: -3px;
@@ -449,7 +453,9 @@ html.sidebar-left-collapsed .reader-sidebar-resize { display: none; }
   z-index: 40;
   display: flex;
   gap: 0.4em;
+  transition: right 0.22s ease;
 }
+html.sidebar-resizing .reader-toolbar { transition: none; }
 .reader-toolbar button, .reader-toolbar a, .reader-sidebar-toggle {
   width: 36px;
   height: 36px;
@@ -697,9 +703,12 @@ mark.user-highlight.flash { outline: 2px solid var(--link); outline-offset: 2px;
   border-left: 1px solid var(--rule);
   padding: 1.5em 1.2em 2em;
   font-family: var(--reader-font-sans);
+  transition: flex-basis 0.22s ease, width 0.22s ease, padding-left 0.22s ease,
+    padding-right 0.22s ease, border-left-color 0.22s ease, opacity 0.15s ease;
 }
 html.sidebar-right-collapsed .reader-sidebar-right {
-  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-left: none; overflow: hidden;
+  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-left-color: transparent;
+  overflow: hidden; opacity: 0;
 }
 .reader-sidebar-right .reader-sidebar-resize { right: auto; left: -3px; }
 html.sidebar-right-collapsed .reader-sidebar-right .reader-sidebar-resize { display: none; }
@@ -1278,6 +1287,11 @@ READER_SCRIPT = """
       startX = e.clientX;
       startWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue(cssVar), 10) || defaultPx;
       handle.classList.add("dragging");
+      // The open/close toggle transition is great for a keyboard/button
+      // triggered collapse, but it would make a live drag feel laggy
+      // (each mousemove frame re-easing behind the cursor) -- suspend it
+      // for the duration of the drag.
+      document.documentElement.classList.add("sidebar-resizing");
       document.body.style.userSelect = "none";
       e.preventDefault();
     });
@@ -1293,6 +1307,7 @@ READER_SCRIPT = """
       if (!dragging) return;
       dragging = false;
       handle.classList.remove("dragging");
+      document.documentElement.classList.remove("sidebar-resizing");
       document.body.style.removeProperty("user-select");
       var patch = {};
       patch[settingsKey] = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
