@@ -348,18 +348,24 @@ input[type=file] { display: none; }
 .sort-control:hover .sort-select { color: var(--fg); }
 .paper-list { display: flex; flex-direction: column; gap: 0.6em; }
 .paper-card {
-  display: flex; align-items: flex-start; gap: 0.9em;
-  border: 1px solid var(--rule); border-left: 3px solid transparent; border-radius: 10px;
-  padding: 0.85em 1.1em 0.85em calc(1.1em - 2px);
+  position: relative; display: flex; align-items: flex-start; gap: 0.9em;
+  border: 1px solid var(--rule); border-radius: 10px;
+  padding: 0.85em 1.1em;
   background: var(--card-bg);
   animation: cardIn 0.18s ease both;
   transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
+.paper-card::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background-color: transparent; pointer-events: none;
+  transition: background-color 0.15s ease;
+}
 .paper-card:hover {
-  border-top-color: var(--accent); border-right-color: var(--accent); border-bottom-color: var(--accent);
+  border-color: var(--accent);
   transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
 }
-.paper-card.selected { border-color: var(--rule); border-left-color: var(--accent); background: var(--rule); }
+.paper-card.selected { border-color: var(--rule); background: var(--rule); }
+.paper-card.selected::before { background-color: var(--accent); }
 .paper-thumb {
   flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
@@ -1165,9 +1171,15 @@ input[type=file] { display: none; }
     render("");
   });
 
-  document.getElementById("infoCloseBtn").addEventListener("click", closeInfoPanel);
+  document.getElementById("infoCloseBtn").addEventListener("click", function () {
+    closeInfoPanel();
+    render(document.getElementById("searchBox").value);
+  });
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) closeInfoPanel();
+    if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) {
+      closeInfoPanel();
+      render(document.getElementById("searchBox").value);
+    }
   });
 
   /* refresh the list (and re-sort by "most recently opened", etc.) whenever
