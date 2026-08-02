@@ -23,7 +23,14 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import algorithm2e_patch, glossaries_patch, makecell_patch, siunitx_patch, tcolorbox_patch
+from . import (
+    algorithm2e_patch,
+    glossaries_patch,
+    makecell_patch,
+    siunitx_patch,
+    tcolorbox_patch,
+    xparse_patch,
+)
 
 VECTOR_EXTS = {".pdf", ".eps"}
 INCLUDEGRAPHICS_RE = re.compile(r"(\\includegraphics(?:\s*\[[^\]]*\])?\{)([^}]*)(\})")
@@ -277,6 +284,7 @@ def convert(input_path: str, workdir: str) -> str:
     tcolorbox_patch.patch_source_tree(main_tex.parent)
     makecell_patch.patch_source_tree(main_tex.parent)
     glossaries_patch.patch_source_tree(main_tex.parent)
+    xparse_patch.patch_source_tree(main_tex.parent)
 
     out_html = main_tex.with_name("paper.html")
     log_path = main_tex.with_name("latexml_run.log")
