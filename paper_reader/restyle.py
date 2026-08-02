@@ -2775,6 +2775,18 @@ READER_SCRIPT = """
         return;
       }
 
+      // Escape always jumps back to the library, regardless of the Vim
+      // toggle -- it's the same href as the visible back-arrow button
+      // (usually the tab/filter the paper was opened from), falling back
+      // to the plain library root if this page has no back button at all
+      // (e.g. opened directly rather than from the library list).
+      if (e.key === "Escape") {
+        var backBtn = document.querySelector(".reader-back-btn");
+        e.preventDefault();
+        window.location.href = (backBtn && backBtn.getAttribute("href")) || "/";
+        return;
+      }
+
       if (!loadSettings().vimNav) return;
 
       // Normally Shift+G already arrives as e.key === "G" (a real keyboard

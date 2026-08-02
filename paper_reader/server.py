@@ -437,15 +437,17 @@ input[type=file] { display: none; }
   background-repeat: no-repeat; background-position: right 0.55em center; appearance: none; -webkit-appearance: none;
 }
 .sort-control:hover .sort-select { color: var(--fg); }
-.paper-list { display: flex; flex-direction: column; gap: 0.6em; }
+.paper-list { display: flex; flex-direction: column; }
 .paper-card {
   position: relative; display: flex; align-items: flex-start; gap: 0.9em;
   border: 1px solid var(--rule); border-radius: 10px;
   padding: 0.85em 1.1em;
+  margin-bottom: 0.6em;
   background: var(--card-bg);
   animation: cardIn 0.18s ease both;
   transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
+.paper-card:last-child { margin-bottom: 0; }
 .paper-card::before {
   content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background-color: transparent; pointer-events: none;
@@ -486,6 +488,7 @@ input[type=file] { display: none; }
 .paper-action-btn:hover { color: var(--fg); background: var(--rule); }
 .paper-action-btn:active { transform: scale(0.9); }
 .paper-action-btn.active { color: var(--accent); }
+.paper-action-btn.danger-action:hover { color: var(--error); }
 .paper-action-btn svg { width: 16px; height: 16px; display: block; }
 .more-wrap { position: relative; }
 .more-menu {
@@ -770,6 +773,12 @@ input[type=file] { display: none; }
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect>' +
     '<line x1="10" y1="12" x2="14" y2="12"></line></svg>';
+  var TRASH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="3 6 5 6 21 6"></polyline>' +
+    '<path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path>' +
+    '<path d="M10 11v6"></path><path d="M14 11v6"></path>' +
+    '<path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"></path></svg>';
   var BOOK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>' +
@@ -777,7 +786,7 @@ input[type=file] { display: none; }
   var STATUS_ACTIONS = [
     { status: "inbox", icon: INBOX_ICON, label: "Move to Inbox" },
     { status: "later", icon: LATER_ICON, label: "Move to Later" },
-    { status: "archive", icon: ARCHIVE_ICON, label: "Move to Archive" }
+    { status: "archive", icon: ARCHIVE_ICON, label: "Move to Archive", shortcut: "A" }
   ];
   var TAB_EMPTY_MESSAGES = {
     inbox: "Nothing in your inbox.",
@@ -874,6 +883,7 @@ input[type=file] { display: none; }
   var currentTab = loadSettings().tab || "inbox";
   var selectedPaper = null;
   var searchOpen = false;
+  var hoveredPaperId = null; // whichever card the mouse is over -- target of the a/d shortcuts below
 
   var SORT_COMPARATORS = {
     added: function (a, b) { return (b.addedAt || 0) - (a.addedAt || 0); },
@@ -1051,23 +1061,91 @@ input[type=file] { display: none; }
       .catch(function (e) { setStatus("Could not move paper: " + e.message, "error"); });
   }
 
+  // Archiving/deleting a card slides it sideways and fades it out, then
+  // collapses the space it took up (height/margin/padding -> 0) so the
+  // cards below smoothly flow up into place -- ordinary CSS layout
+  // animation, no per-sibling bookkeeping needed. `onDone` fires once the
+  // card has fully collapsed and is where the caller should actually
+  // mutate state + re-render; if the card element can't be found (already
+  // gone, or this status change doesn't remove it from view) it fires
+  // immediately so callers don't need a separate "no animation" branch.
+  var CARD_SLIDE_MS = 200;
+  var CARD_COLLAPSE_MS = 220;
+  function animateCardExit(paperId, onDone) {
+    var card = document.querySelector('.paper-card[data-paper-id="' + paperId + '"]');
+    if (!card) { onDone(); return; }
+    card.style.pointerEvents = "none";
+    card.style.transition = "transform " + CARD_SLIDE_MS + "ms ease, opacity " + CARD_SLIDE_MS + "ms ease";
+    card.style.transform = "translateX(40px)";
+    card.style.opacity = "0";
+
+    var collapsed = false;
+    function collapse() {
+      if (collapsed) return;
+      collapsed = true;
+      var cs = getComputedStyle(card);
+      card.style.height = card.getBoundingClientRect().height + "px";
+      card.style.marginBottom = cs.marginBottom;
+      card.style.paddingTop = cs.paddingTop;
+      card.style.paddingBottom = cs.paddingBottom;
+      card.style.overflow = "hidden";
+      card.getBoundingClientRect(); // force reflow so the transition below starts from these values
+      card.style.transition = [
+        "height " + CARD_COLLAPSE_MS + "ms ease",
+        "margin-bottom " + CARD_COLLAPSE_MS + "ms ease",
+        "padding-top " + CARD_COLLAPSE_MS + "ms ease",
+        "padding-bottom " + CARD_COLLAPSE_MS + "ms ease",
+        "border-width " + CARD_COLLAPSE_MS + "ms ease"
+      ].join(", ");
+      requestAnimationFrame(function () {
+        card.style.height = "0px";
+        card.style.marginBottom = "0px";
+        card.style.paddingTop = "0px";
+        card.style.paddingBottom = "0px";
+        card.style.borderWidth = "0px";
+      });
+      var finished = false;
+      function finish() {
+        if (finished) return;
+        finished = true;
+        card.removeEventListener("transitionend", finish);
+        onDone();
+      }
+      card.addEventListener("transitionend", finish);
+      setTimeout(finish, CARD_COLLAPSE_MS + 80); // fallback in case transitionend is missed
+    }
+    card.addEventListener("transitionend", collapse, { once: true });
+    setTimeout(collapse, CARD_SLIDE_MS + 40); // fallback
+  }
+
   function updatePaperStatus(p, status) {
+    var prevStatus = p.status || "inbox";
+    if (status === prevStatus) return;
+    var leavesView = status !== currentTab;
     if (status !== "archive") {
-      commitPaperStatus(p, status);
-      p.status = status;
-      render(document.getElementById("searchBox").value);
-      if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+      function applyStatus() {
+        commitPaperStatus(p, status);
+        p.status = status;
+        render(document.getElementById("searchBox").value);
+        if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+      }
+      if (leavesView) animateCardExit(p.id, applyStatus); else applyStatus();
       return;
     }
-    var prevStatus = p.status || "inbox";
-    p.status = "archive";
-    render(document.getElementById("searchBox").value);
-    if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+    var undone = false;
+    function applyArchive() {
+      if (undone) return;
+      p.status = "archive";
+      render(document.getElementById("searchBox").value);
+      if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
+    }
+    if (leavesView) animateCardExit(p.id, applyArchive); else applyArchive();
     showUndoToast(
       "status:" + p.id,
       'Archived "' + p.title + '"',
       function () { commitPaperStatus(p, "archive"); },
       function () {
+        undone = true;
         p.status = prevStatus;
         render(document.getElementById("searchBox").value);
         if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
@@ -1288,6 +1366,9 @@ input[type=file] { display: none; }
     filtered.forEach(function (p) {
       var card = document.createElement("div");
       card.className = "paper-card" + (selectedPaper && selectedPaper.id === p.id ? " selected" : "");
+      card.dataset.paperId = p.id;
+      card.addEventListener("mouseenter", function () { hoveredPaperId = p.id; });
+      card.addEventListener("mouseleave", function () { if (hoveredPaperId === p.id) hoveredPaperId = null; });
 
       var thumb = document.createElement("div");
       thumb.className = "paper-thumb";
@@ -1347,8 +1428,9 @@ input[type=file] { display: none; }
         var btn = document.createElement("button");
         btn.type = "button";
         btn.className = "paper-action-btn" + ((p.status || "inbox") === spec.status ? " active" : "");
-        btn.setAttribute("aria-label", spec.label);
-        btn.title = spec.label;
+        var label = spec.label + (spec.shortcut ? " (" + spec.shortcut + ")" : "");
+        btn.setAttribute("aria-label", label);
+        btn.title = label;
         btn.innerHTML = spec.icon;
         btn.addEventListener("click", function (e) {
           e.preventDefault();
@@ -1357,6 +1439,19 @@ input[type=file] { display: none; }
         });
         actions.appendChild(btn);
       });
+
+      var deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.className = "paper-action-btn danger-action";
+      deleteBtn.setAttribute("aria-label", "Delete (D)");
+      deleteBtn.title = "Delete (D)";
+      deleteBtn.innerHTML = TRASH_ICON;
+      deleteBtn.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        removePaper(p);
+      });
+      actions.appendChild(deleteBtn);
 
       card.appendChild(actions);
       list.appendChild(card);
@@ -1374,15 +1469,26 @@ input[type=file] { display: none; }
 
   function removePaper(p) {
     if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
-    papers = papers.filter(function (x) { return x.id !== p.id; });
-    renderSidebarTags();
-    render(document.getElementById("searchBox").value);
+    // `removed` and `undone` independently track which of "the exit
+    // animation finished" and "the user hit undo" happened first, since
+    // either order is possible within the 5s undo window -- undo arriving
+    // first just cancels the still-pending removal (p was never taken out
+    // of `papers`), undo arriving after has to add p back in.
+    var undone = false, removed = false;
+    animateCardExit(p.id, function () {
+      if (undone) return;
+      removed = true;
+      papers = papers.filter(function (x) { return x.id !== p.id; });
+      renderSidebarTags();
+      render(document.getElementById("searchBox").value);
+    });
     showUndoToast(
       "delete:" + p.id,
       'Removed "' + p.title + '"',
       function () { commitPaperRemoval(p); },
       function () {
-        papers.push(p);
+        undone = true;
+        if (removed) papers.push(p);
         renderSidebarTags();
         render(document.getElementById("searchBox").value);
       }
@@ -1635,6 +1741,25 @@ input[type=file] { display: none; }
     if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) {
       closeInfoPanel();
       render(document.getElementById("searchBox").value);
+      return;
+    }
+    // "a"/"d" (archive/delete) target whichever card the mouse is
+    // currently over, matching the hint shown in each button's own
+    // tooltip -- same reasoning as the reader page's hover-scoped
+    // shortcuts, and guarded the same way against typing in a field.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    var t = e.target;
+    var tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+    if (!hoveredPaperId) return;
+    var hp = papers.filter(function (x) { return x.id === hoveredPaperId; })[0];
+    if (!hp) return;
+    if (e.key === "a" || e.key === "A") {
+      e.preventDefault();
+      updatePaperStatus(hp, "archive");
+    } else if (e.key === "d" || e.key === "D") {
+      e.preventDefault();
+      removePaper(hp);
     }
   });
 
