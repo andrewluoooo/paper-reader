@@ -595,6 +595,33 @@ input[type=file] { display: none; }
 .drop-overlay-card strong { display: block; font-size: 1.2em; margin-bottom: 0.4em; color: var(--fg); }
 .drop-overlay-card div { color: var(--muted); font-size: 0.88em; }
 
+/* ------------------------------------------------------------ confirm dialog */
+.confirm-overlay {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+  animation: overlayFadeIn 0.15s ease;
+}
+.confirm-overlay[hidden] { display: none; }
+.confirm-card {
+  background: var(--card-bg); border: 1px solid var(--rule); border-radius: 14px;
+  padding: 1.6em 1.8em; max-width: 360px; width: calc(100% - 2.4em);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.24);
+  animation: overlayCardIn 0.18s ease;
+}
+.confirm-card strong { display: block; font-size: 1.05em; margin-bottom: 0.5em; color: var(--fg); }
+.confirm-card p { color: var(--muted); font-size: 0.86em; line-height: 1.5; margin: 0 0 1.4em; overflow-wrap: anywhere; }
+.confirm-card-actions { display: flex; justify-content: flex-end; gap: 0.6em; }
+.confirm-card-actions button {
+  border: none; border-radius: 8px; padding: 0.55em 1.1em; font-size: 0.85em; font-weight: 600; cursor: pointer;
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  transition: opacity 0.15s ease;
+}
+.confirm-cancel-btn { background: var(--rule); color: var(--fg); }
+.confirm-cancel-btn:hover { opacity: 0.8; }
+.confirm-delete-btn { background: var(--error); color: #fff; }
+.confirm-delete-btn:hover { opacity: 0.85; }
+
 /* --------------------------------------------------------------- undo toasts */
 .undo-toast-container {
   position: fixed; left: 1.2em; bottom: 1.2em; z-index: 200;
@@ -761,6 +788,17 @@ input[type=file] { display: none; }
   <div class="drop-overlay-card">
     <strong>Drop to add to your library</strong>
     <div>.tex, .zip, .tar.gz, .tgz, .pdf &mdash; or a saved .html paper page</div>
+  </div>
+</div>
+
+<div class="confirm-overlay" id="confirmOverlay" hidden>
+  <div class="confirm-card">
+    <strong>Delete permanently?</strong>
+    <p id="confirmMessage"></p>
+    <div class="confirm-card-actions">
+      <button type="button" class="confirm-cancel-btn" id="confirmCancelBtn">Cancel</button>
+      <button type="button" class="confirm-delete-btn" id="confirmDeleteBtn">Delete</button>
+    </div>
   </div>
 </div>
 
@@ -1484,6 +1522,39 @@ input[type=file] { display: none; }
     });
   }
 
+  // Small centered confirm dialog (matches the drop-overlay/more-menu
+  // visual language) gating the one truly destructive action in this app --
+  // permanent delete. Cancel, clicking the backdrop, or Escape all just
+  // close it with no callback; only the Delete button runs onConfirm.
+  var confirmOverlay = document.getElementById("confirmOverlay");
+  var confirmMessageEl = document.getElementById("confirmMessage");
+  var confirmCancelBtn = document.getElementById("confirmCancelBtn");
+  var confirmDeleteBtn = document.getElementById("confirmDeleteBtn");
+  var confirmActiveCallback = null;
+
+  function closeConfirmDialog() {
+    confirmOverlay.hidden = true;
+    confirmActiveCallback = null;
+  }
+  confirmCancelBtn.addEventListener("click", closeConfirmDialog);
+  confirmOverlay.addEventListener("click", function (e) {
+    if (e.target === confirmOverlay) closeConfirmDialog();
+  });
+  confirmDeleteBtn.addEventListener("click", function () {
+    var cb = confirmActiveCallback;
+    closeConfirmDialog();
+    if (cb) cb();
+  });
+
+  function confirmPermanentDelete(p, onConfirm) {
+    confirmMessageEl.textContent = 'Permanently delete "' + p.title + '"? This cannot be undone.';
+    confirmActiveCallback = onConfirm;
+    confirmOverlay.hidden = false;
+    // Default focus on Cancel, not Delete, so a stray Enter press doesn't
+    // confirm the destructive action.
+    confirmCancelBtn.focus();
+  }
+
   function commitPaperRemoval(p) {
     fetch("/api/papers/" + encodeURIComponent(p.id), { method: "DELETE" })
       .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
@@ -1532,8 +1603,11 @@ input[type=file] { display: none; }
   // the Trash tab), but from inside the Trash tab it's already trash --
   // there's nowhere further to move it, so it deletes for real.
   function deletePaperFromCard(p) {
-    if (currentTab === "trash") permanentlyDeletePaper(p);
-    else updatePaperStatus(p, "trash");
+    if (currentTab === "trash") {
+      confirmPermanentDelete(p, function () { permanentlyDeletePaper(p); });
+    } else {
+      updatePaperStatus(p, "trash");
+    }
   }
 
   function loadPapers() {
@@ -1779,6 +1853,10 @@ input[type=file] { display: none; }
     render(document.getElementById("searchBox").value);
   });
   document.addEventListener("keydown", function (e) {
+    if (!confirmOverlay.hidden) {
+      if (e.key === "Escape") closeConfirmDialog();
+      return;
+    }
     if (e.key === "Escape" && !document.getElementById("infoPanel").hidden) {
       closeInfoPanel();
       render(document.getElementById("searchBox").value);
