@@ -2527,6 +2527,46 @@ READER_SCRIPT = """
     update();
   }
 
+  /* -------------------------------------------------------- reading progress */
+  // Info-tab "Progress" / "Time left" -- same scroll-fraction math as the
+  // progress bar above, kept as its own listener (rather than piggybacking
+  // on initProgressBar) since it targets different elements and can be a
+  // no-op on papers with no word count.
+  function initReadingProgress() {
+    var pctEl = document.getElementById("readerPercentRead");
+    var timeEl = document.getElementById("readerTimeLeft");
+    if (!pctEl && !timeEl) return;
+    var wordCount = (window.__readerMeta && window.__readerMeta.word_count) || 0;
+    var WORDS_PER_MINUTE = 200;  // rough pace for careful/technical reading
+    var ticking = false;
+    function update() {
+      ticking = false;
+      var doc = document.documentElement;
+      var scrollable = doc.scrollHeight - window.innerHeight;
+      // Unlike the progress bar, a paper that fits entirely on screen with
+      // nothing to scroll counts as fully read (1), not 0 -- there's
+      // nothing left below the fold to account for.
+      var pct = scrollable > 0 ? Math.min(1, Math.max(0, window.scrollY / scrollable)) : 1;
+      if (pctEl) pctEl.textContent = Math.round(pct * 100) + "%";
+      if (timeEl) {
+        if (!wordCount) {
+          timeEl.textContent = "–";
+        } else {
+          var minutesLeft = Math.ceil((wordCount * (1 - pct)) / WORDS_PER_MINUTE);
+          timeEl.textContent = minutesLeft <= 0 ? "Done" : minutesLeft === 1 ? "1 min left" : minutesLeft + " min left";
+        }
+      }
+    }
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(update);
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    update();
+  }
+
   /* ---------------------------------------------------------------- focus bar */
   // Tracks which paragraph/figure is currently in reading focus and
   // draws a bar beside it in the left margin -- an IntersectionObserver
@@ -2743,6 +2783,7 @@ READER_SCRIPT = """
     initHighlighting();
     initRefPreviews();
     initProgressBar();
+    initReadingProgress();
     // initFocusBar(); -- temporarily disabled
     initReadingPosition();
     initDropUpload();
@@ -2848,6 +2889,16 @@ def _extract_metadata(article) -> dict:
     meta["n_tables"] = len(article.select("figure.ltx_table"))
     meta["n_references"] = len(article.select(".ltx_bibitem"))
     meta["n_sections"] = len(article.select("h2.ltx_title_section"))
+
+    # Prose only -- headings are structural/skimmed rather than read, and
+    # bibliography entries aren't read linearly the way body text is, so
+    # neither should count toward a "words"/"time to read" estimate.
+    word_count = 0
+    for p in article.select(".ltx_p"):
+        if p.find_parent(class_="ltx_bibliography"):
+            continue
+        word_count += len(p.get_text(" ", strip=True).split())
+    meta["word_count"] = word_count
     return meta
 
 
@@ -2870,6 +2921,11 @@ def _render_info_tab_html(meta: dict, source_name: str) -> str:
         )
 
     rows = []
+    # Filled in live by initReadingProgress() as the user scrolls -- rendered
+    # here as placeholders so they're on the page immediately rather than
+    # popping in after the first scroll/init tick.
+    rows.append(("Progress", '<span id="readerPercentRead">0%</span>'))
+    rows.append(("Time left", '<span id="readerTimeLeft">–</span>'))
     if meta.get("venue"):
         rows.append(("Venue", meta["venue"]))
     if meta.get("year"):
@@ -2879,15 +2935,17 @@ def _render_info_tab_html(meta: dict, source_name: str) -> str:
         rows.append(("DOI", f'<a href="https://doi.org/{html.escape(doi, quote=True)}">{html.escape(doi)}</a>'))
     if source_name:
         rows.append(("Source", source_name))
+    rows.append(("Words", f"{meta.get('word_count', 0):,}"))
     rows.append(("Sections", str(meta.get("n_sections", 0))))
     rows.append(("Figures", str(meta.get("n_figures", 0))))
     rows.append(("Tables", str(meta.get("n_tables", 0))))
     rows.append(("References", str(meta.get("n_references", 0))))
 
+    _RAW_HTML_ROWS = {"DOI", "Progress", "Time left"}
     if rows:
         row_html = "".join(
             f'<div class="reader-meta-row"><span class="reader-meta-label">{html.escape(label)}</span>'
-            f"<span>{value if label == 'DOI' else html.escape(value)}</span></div>"
+            f"<span>{value if label in _RAW_HTML_ROWS else html.escape(value)}</span></div>"
             for label, value in rows
         )
         parts.append(f'<div class="reader-meta-section">{row_html}</div>')
@@ -3120,6 +3178,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
         "year": metadata.get("year", ""),
         "doi": metadata.get("doi", ""),
         "source": source_name,
+        "word_count": metadata.get("word_count", 0),
     }
     meta_json = json.dumps(export_meta).replace("</", "<\\/")
 
