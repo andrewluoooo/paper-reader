@@ -259,8 +259,15 @@ figure.ltx_figure img, .ltx_graphics { max-width: 100%; height: auto; }
    that would otherwise scale it, so without this the SVG paints at its
    literal width/height attributes and spills out of the reading column.
    A sized-but-viewBox-less root <svg> scales proportionally under CSS
-   width/height constraints the same way an <img> does. */
-svg.ltx_picture, .ltx_picture { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+   width/height constraints the same way an <img> does. The same tikz
+   machinery also produces tiny *inline* pictures -- circled-letter/number
+   badges (\tikz{\node[shape=circle,...]{...}}) used directly in running
+   prose, not wrapped in a figure -- so only the max-width/height cap
+   applies universally; forcing block+centering is scoped to pictures
+   that are actually inside a figure, or it yanks those inline badges
+   out onto their own centered line, breaking the sentence they sit in. */
+svg.ltx_picture, .ltx_picture { max-width: 100%; height: auto; }
+figure svg.ltx_picture, figure .ltx_picture { display: block; margin: 0 auto; }
 figcaption.ltx_caption, .ltx_caption {
   font-size: 0.92em;
   color: var(--muted);
