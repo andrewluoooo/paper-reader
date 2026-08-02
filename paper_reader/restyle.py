@@ -2708,8 +2708,10 @@ READER_SCRIPT = """
   // otherwise hijack normal typing -- settings.vimNav is re-read from
   // localStorage on every keypress rather than cached, so toggling the
   // switch takes effect immediately without needing to re-run this
-  // function. All scrolling here is smooth (native scroll-behavior), not
-  // an instant jump.
+  // function. Every scroll here is smooth but hand-animated (not the
+  // browser's native scroll-behavior:"smooth"), because native smooth
+  // scroll has no speed knob and its default pace reads as sluggish for
+  // quick, repeated key taps.
   function initKeyboardShortcuts() {
     var VIM_SCROLL_STEP = 100; // px per j/k press -- a few lines, not a full page
     var GG_TIMEOUT_MS = 500; // max gap between the two "g" presses of "gg"
@@ -2720,6 +2722,36 @@ READER_SCRIPT = """
     // keys, so no modifier is needed to disambiguate).
     function bigScrollStep() {
       return Math.round(window.innerHeight * 0.5);
+    }
+
+    // Fast, distance-scaled scroll animation: short jumps (j/k/d/u) settle
+    // almost instantly, while a full-document gg/G jump still takes at
+    // most SCROLL_ANIM_MAX_MS rather than however long the browser's own
+    // smooth-scroll would take. Re-targeting mid-animation (e.g. holding
+    // "j" down) cancels and restarts from the current position instead of
+    // queuing, so repeated taps stay responsive.
+    var SCROLL_ANIM_MIN_MS = 110;
+    var SCROLL_ANIM_MAX_MS = 260;
+    var scrollAnimFrame = null;
+    function animateScrollTo(targetY) {
+      var maxY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      targetY = Math.max(0, Math.min(targetY, maxY));
+      if (scrollAnimFrame) cancelAnimationFrame(scrollAnimFrame);
+      var startY = window.scrollY;
+      var delta = targetY - startY;
+      var duration = Math.min(SCROLL_ANIM_MAX_MS, Math.max(SCROLL_ANIM_MIN_MS, Math.abs(delta) * 0.15));
+      var startTime = null;
+      function step(ts) {
+        if (startTime === null) startTime = ts;
+        var progress = Math.min((ts - startTime) / duration, 1);
+        var eased = 1 - Math.pow(1 - progress, 3); // ease-out cubic
+        window.scrollTo(0, startY + delta * eased);
+        scrollAnimFrame = progress < 1 ? requestAnimationFrame(step) : null;
+      }
+      scrollAnimFrame = requestAnimationFrame(step);
+    }
+    function animateScrollBy(deltaY) {
+      animateScrollTo(window.scrollY + deltaY);
     }
 
     document.addEventListener("keydown", function (e) {
@@ -2746,22 +2778,22 @@ READER_SCRIPT = """
       switch (key) {
         case "j":
           e.preventDefault();
-          window.scrollBy({ top: VIM_SCROLL_STEP, behavior: "smooth" });
+          animateScrollBy(VIM_SCROLL_STEP);
           lastGAt = 0;
           break;
         case "k":
           e.preventDefault();
-          window.scrollBy({ top: -VIM_SCROLL_STEP, behavior: "smooth" });
+          animateScrollBy(-VIM_SCROLL_STEP);
           lastGAt = 0;
           break;
         case "d":
           e.preventDefault();
-          window.scrollBy({ top: bigScrollStep(), behavior: "smooth" });
+          animateScrollBy(bigScrollStep());
           lastGAt = 0;
           break;
         case "u":
           e.preventDefault();
-          window.scrollBy({ top: -bigScrollStep(), behavior: "smooth" });
+          animateScrollBy(-bigScrollStep());
           lastGAt = 0;
           break;
         case "h":
@@ -2785,7 +2817,7 @@ READER_SCRIPT = """
           e.preventDefault();
           var now = Date.now();
           if (lastGAt && now - lastGAt < GG_TIMEOUT_MS) {
-            window.scrollTo({ top: 0, behavior: "smooth" });
+            animateScrollTo(0);
             lastGAt = 0;
           } else {
             lastGAt = now;
@@ -2793,7 +2825,7 @@ READER_SCRIPT = """
           break;
         case "G":
           e.preventDefault();
-          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
+          animateScrollTo(document.documentElement.scrollHeight);
           lastGAt = 0;
           break;
         default:
