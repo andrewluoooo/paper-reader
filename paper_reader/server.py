@@ -46,6 +46,58 @@ PDF_SOURCE_SUFFIXES = (".pdf",)
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
 PAPER_STATUSES = ("inbox", "later", "archive")
 
+# ---------------------------------------------------------------- pipeline jobs
+# Uploads run in their own thread (ThreadingHTTPServer) and can take anywhere
+# from seconds to well over an hour (a real LaTeXML run on a large paper) --
+# this is just an in-memory, best-effort record of what's currently
+# converting and what recently finished, for the /pipeline status page. Not
+# persisted: a server restart clears it, same as it would drop an in-flight
+# upload's connection anyway.
+_JOBS_LOCK = threading.Lock()
+_active_jobs: dict[str, dict] = {}
+_JOB_HISTORY_LIMIT = 30
+_job_history: list[dict] = []
+
+
+def _job_start(filename: str) -> str:
+    job_id = uuid.uuid4().hex[:12]
+    with _JOBS_LOCK:
+        _active_jobs[job_id] = {
+            "id": job_id,
+            "filename": filename,
+            "stage": "preparing",
+            "startedAt": time.time(),
+        }
+    return job_id
+
+
+def _job_stage(job_id: str, stage: str) -> None:
+    with _JOBS_LOCK:
+        job = _active_jobs.get(job_id)
+        if job is not None:
+            job["stage"] = stage
+
+
+def _job_finish(job_id: str, ok: bool, error: str = "", paper_id: str = "") -> None:
+    with _JOBS_LOCK:
+        job = _active_jobs.pop(job_id, None)
+        if job is None:
+            return
+        job["finishedAt"] = time.time()
+        job["ok"] = ok
+        job["error"] = error
+        job["paperId"] = paper_id
+        _job_history.insert(0, job)
+        del _job_history[_JOB_HISTORY_LIMIT:]
+
+
+def _list_jobs() -> dict:
+    with _JOBS_LOCK:
+        active = [dict(j) for j in _active_jobs.values()]
+        history = [dict(j) for j in _job_history]
+    active.sort(key=lambda j: j["startedAt"])
+    return {"active": active, "history": history}
+
 
 def _load_index() -> list[dict]:
     if INDEX_PATH.is_file():
@@ -64,43 +116,53 @@ def _save_index(items: list[dict]) -> None:
 def _process_upload(filename: str, data: bytes) -> dict:
     """Run the same convert()+restyle() pipeline the CLI uses, save the
     result into the library, and return its index entry."""
-    paper_id = uuid.uuid4().hex[:12]
-    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    raw_workdir = RAW_DIR / paper_id
-    raw_workdir.mkdir(parents=True, exist_ok=True)
+    job_id = _job_start(filename)
+    try:
+        paper_id = uuid.uuid4().hex[:12]
+        LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        raw_workdir = RAW_DIR / paper_id
+        raw_workdir.mkdir(parents=True, exist_ok=True)
 
-    is_html_source = filename.lower().endswith(HTML_SOURCE_SUFFIXES)
-    is_pdf_source = filename.lower().endswith(PDF_SOURCE_SUFFIXES)
-    with tempfile.TemporaryDirectory(prefix="paper_reader_upload_") as tmp:
-        tmp_path = Path(tmp) / os.path.basename(filename)
-        tmp_path.write_bytes(data)
-        if is_html_source:
-            raw_html_path = convert_html(str(tmp_path), str(raw_workdir))
-        elif is_pdf_source:
-            raw_html_path = convert_pdf(str(tmp_path), str(raw_workdir))
-        else:
-            raw_html_path = convert_latex(str(tmp_path), str(raw_workdir))
+        is_html_source = filename.lower().endswith(HTML_SOURCE_SUFFIXES)
+        is_pdf_source = filename.lower().endswith(PDF_SOURCE_SUFFIXES)
+        kind = "html" if is_html_source else "pdf" if is_pdf_source else "latex"
+        with tempfile.TemporaryDirectory(prefix="paper_reader_upload_") as tmp:
+            tmp_path = Path(tmp) / os.path.basename(filename)
+            tmp_path.write_bytes(data)
+            _job_stage(job_id, f"converting ({kind})")
+            if is_html_source:
+                raw_html_path = convert_html(str(tmp_path), str(raw_workdir))
+            elif is_pdf_source:
+                raw_html_path = convert_pdf(str(tmp_path), str(raw_workdir))
+            else:
+                raw_html_path = convert_latex(str(tmp_path), str(raw_workdir))
 
-    html_out, metadata = restyle(raw_html_path, source_name=filename, back_link="/")
-    (LIBRARY_DIR / f"{paper_id}.html").write_text(html_out, encoding="utf-8")
+        _job_stage(job_id, "styling")
+        html_out, metadata = restyle(raw_html_path, source_name=filename, back_link="/")
+        (LIBRARY_DIR / f"{paper_id}.html").write_text(html_out, encoding="utf-8")
 
-    entry = {
-        "id": paper_id,
-        "title": metadata.get("title") or filename,
-        "authors": [a["name"] for a in metadata.get("authors", [])],
-        "venue": metadata.get("venue", ""),
-        "summary": (metadata.get("abstract") or "").strip()[:320],
-        "sourceFilename": filename,
-        "addedAt": time.time(),
-        "lastOpenedAt": None,
-        "rawHtmlPath": raw_html_path,
-        "tags": [],
-        "status": "inbox",
-    }
-    items = _load_index()
-    items.insert(0, entry)
-    _save_index(items)
-    return entry
+        _job_stage(job_id, "saving")
+        entry = {
+            "id": paper_id,
+            "title": metadata.get("title") or filename,
+            "authors": [a["name"] for a in metadata.get("authors", [])],
+            "venue": metadata.get("venue", ""),
+            "summary": (metadata.get("abstract") or "").strip()[:320],
+            "sourceFilename": filename,
+            "addedAt": time.time(),
+            "lastOpenedAt": None,
+            "rawHtmlPath": raw_html_path,
+            "tags": [],
+            "status": "inbox",
+        }
+        items = _load_index()
+        items.insert(0, entry)
+        _save_index(items)
+        _job_finish(job_id, ok=True, paper_id=paper_id)
+        return entry
+    except Exception as e:
+        _job_finish(job_id, ok=False, error=str(e))
+        raise
 
 
 def _rebuild_paper(entry: dict) -> bool:
@@ -582,6 +644,8 @@ input[type=file] { display: none; }
       <button type="button" class="nav-item" id="navSearchBtn">Search</button>
       <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
       <div class="sidebar-footer">
+        <a href="/pipeline">Pipeline</a>
+        <span class="footer-sep">&middot;</span>
         <a href="/about">About</a>
         <span class="footer-sep">&middot;</span>
         <a href="https://github.com/andrewluoooo/paper-reader">GitHub</a>
@@ -1574,6 +1638,175 @@ p a { color: var(--accent); }
 </html>
 """
 
+PIPELINE_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<script>
+(function () {
+  try {
+    var s = JSON.parse(localStorage.getItem("paper_reader_settings") || "{}");
+    if (s.theme === "light" || s.theme === "dark") document.documentElement.setAttribute("data-theme", s.theme);
+  } catch (e) {}
+})();
+</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline &mdash; Andrew's Paper Library</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db;
+  --card-bg: #fbfaf8; --error: #b3261e; --ok: #1a7d3a;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --ok: #5fd88a; }
+}
+:root[data-theme="light"] { --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --ok: #1a7d3a; }
+:root[data-theme="dark"] { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --ok: #5fd88a; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+}
+.wrap { max-width: 760px; margin: 0 auto; padding: 9vh 6vw 12vh; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 0.4em; color: var(--muted); text-decoration: none;
+  font-size: 0.85em; margin-bottom: 2.5em;
+}
+.back-link:hover { color: var(--accent); }
+.back-link svg { display: block; }
+h1 { font-size: 1.6em; margin: 0 0 0.2em; }
+.subtitle { color: var(--muted); font-size: 0.92em; margin: 0 0 2em; }
+h2 { font-size: 1.02em; margin: 2.2em 0 0.8em; }
+.empty { color: var(--muted); font-size: 0.92em; padding: 1.2em 0; }
+.job-list { display: flex; flex-direction: column; gap: 0.6em; }
+.job-card {
+  border: 1px solid var(--rule); border-radius: 10px; background: var(--card-bg);
+  padding: 0.9em 1.1em; display: flex; align-items: center; gap: 0.9em;
+}
+.job-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.94em; }
+.job-meta { display: flex; align-items: center; gap: 0.6em; flex-shrink: 0; font-size: 0.85em; color: var(--muted); }
+.job-stage {
+  display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.65em; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font-weight: 600;
+}
+.job-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.job-elapsed { font-variant-numeric: tabular-nums; }
+.job-result {
+  display: inline-flex; align-items: center; gap: 0.4em; padding: 0.25em 0.65em; border-radius: 999px; font-weight: 600;
+}
+.job-result.ok { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+.job-result.fail { background: color-mix(in srgb, var(--error) 14%, transparent); color: var(--error); }
+.job-error { color: var(--error); font-size: 0.85em; margin-top: 0.4em; }
+.job-open { color: var(--accent); font-size: 0.85em; text-decoration: none; }
+.job-open:hover { text-decoration: underline; }
+.job-card-col { display: flex; flex-direction: column; gap: 0.3em; flex: 1; min-width: 0; }
+@media (prefers-reduced-motion: reduce) { .job-dot { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back-link" href="/">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    Back to library
+  </a>
+  <h1>Pipeline</h1>
+  <p class="subtitle" id="subtitle">Checking&hellip;</p>
+
+  <h2>Processing</h2>
+  <div id="activeList"></div>
+
+  <h2>Recently finished</h2>
+  <div id="historyList"></div>
+</div>
+<script>
+function esc(s) {
+  var d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+function fmtElapsed(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  if (seconds < 60) return seconds + "s";
+  var m = Math.floor(seconds / 60), s = seconds % 60;
+  if (m < 60) return m + "m " + s + "s";
+  var h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m";
+}
+function fmtAgo(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  if (seconds < 5) return "just now";
+  return fmtElapsed(seconds) + " ago";
+}
+
+function renderActive(jobs) {
+  var el = document.getElementById("activeList");
+  if (!jobs.length) {
+    el.innerHTML = '<div class="empty">Nothing converting right now.</div>';
+    return;
+  }
+  var now = Date.now() / 1000;
+  el.innerHTML = '<div class="job-list">' + jobs.map(function (j) {
+    return '<div class="job-card">' +
+      '<span class="job-name" title="' + esc(j.filename) + '">' + esc(j.filename) + '</span>' +
+      '<span class="job-meta">' +
+        '<span class="job-stage"><span class="job-dot"></span>' + esc(j.stage) + '</span>' +
+        '<span class="job-elapsed">' + fmtElapsed(now - j.startedAt) + '</span>' +
+      '</span>' +
+    '</div>';
+  }).join("") + '</div>';
+}
+
+function renderHistory(jobs) {
+  var el = document.getElementById("historyList");
+  if (!jobs.length) {
+    el.innerHTML = '<div class="empty">No papers have finished processing yet this session.</div>';
+    return;
+  }
+  var now = Date.now() / 1000;
+  el.innerHTML = '<div class="job-list">' + jobs.map(function (j) {
+    var resultBadge = j.ok
+      ? '<span class="job-result ok">Done</span>'
+      : '<span class="job-result fail">Failed</span>';
+    var detail = j.ok
+      ? (j.paperId ? '<a class="job-open" href="/library/' + esc(j.paperId) + '.html">Open it</a>' : '')
+      : '<div class="job-error">' + esc(j.error || "unknown error") + '</div>';
+    return '<div class="job-card">' +
+      '<div class="job-card-col">' +
+        '<span class="job-name" title="' + esc(j.filename) + '">' + esc(j.filename) + '</span>' +
+        detail +
+      '</div>' +
+      '<span class="job-meta">' +
+        resultBadge +
+        '<span>' + fmtAgo(now - j.finishedAt) + '</span>' +
+      '</span>' +
+    '</div>';
+  }).join("") + '</div>';
+}
+
+function refresh() {
+  fetch("/api/pipeline-status").then(function (r) { return r.json(); }).then(function (data) {
+    renderActive(data.active || []);
+    renderHistory(data.history || []);
+    var n = (data.active || []).length;
+    document.getElementById("subtitle").textContent = n
+      ? (n === 1 ? "1 paper converting" : n + " papers converting")
+      : "Nothing in progress";
+  }).catch(function () {
+    document.getElementById("subtitle").textContent = "Couldn't reach the server";
+  });
+}
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>
+"""
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PaperReaderLibrary/1.0"
@@ -1601,8 +1834,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(HOME_PAGE_HTML)
         elif parsed.path == "/about":
             self._send_html(ABOUT_PAGE_HTML)
+        elif parsed.path == "/pipeline":
+            self._send_html(PIPELINE_PAGE_HTML)
         elif parsed.path == "/api/papers":
             self._send_json(_load_index())
+        elif parsed.path == "/api/pipeline-status":
+            self._send_json(_list_jobs())
         elif parsed.path.startswith("/library/"):
             self._serve_library_file(parsed.path[len("/library/") :])
         else:
