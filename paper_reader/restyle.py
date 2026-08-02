@@ -195,7 +195,15 @@ h1.ltx_title_document {
   color: var(--muted);
   font-size: 0.85em;
 }
-.ltx_author_notes { display: block; margin-top: 0.1em; }
+.ltx_author_notes {
+  display: block;
+  margin-top: 0.5em;
+  color: var(--muted);
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.ltx_author_note_item { display: block; margin: 0 0 0.3em; }
+.ltx_author_note_item:last-child { margin-bottom: 0; }
 .ltx_dates, .ltx_classification { display: none; }
 
 .ltx_abstract {
@@ -3029,6 +3037,57 @@ def _dedupe_document_title(article) -> None:
         stray.decompose()
 
 
+_AUTHOR_NOTE_GLUE_RE = re.compile(r"(?<=\)\.)(?=[A-Z])")
+
+
+def _fix_author_notes(soup, article) -> None:
+    """IEEEtran-style papers commonly attach affiliation/e-mail info to
+    `\\author` via one or more `\\thanks{...}` calls rather than a proper
+    affiliation macro (`\\author{A~Name,~B~Name\\thanks{A. is with
+    ...}\\thanks{B. is with ...}}`). LaTeXML renders that as a single
+    `.ltx_author_notes` span sitting right after `.ltx_personname` inside
+    `.ltx_creator` -- and unlike `.ltx_role_affiliation`/`.ltx_role_email`
+    (ACM-style, already styled small/muted below), it ships with no
+    styling of its own, so it reads as an unbroken continuation of the
+    bold author-names line above it.
+
+    Worse, when an `\\author` command carries *multiple* `\\thanks{}`
+    calls -- one per co-author or affiliation group, as IEEE papers
+    commonly do -- LaTeXML concatenates all of their bodies into a single
+    flat text node with no separating whitespace at all, e.g.
+    "...acm.org).M. Kondo is with...". Left alone that's a run-on wall of
+    text glued onto the byline. Split it back into individual notes on
+    the telltale glued boundary each `\\thanks` body butts up against the
+    next one at: a close-paren immediately followed by a period and a
+    capital letter with no space. That specific "). Capital" shape is
+    what a `\\thanks` body ending in the near-universal IEEEtran
+    "(e-mail: ...)." sign-off leaves behind when LaTeXML drops the
+    separating whitespace, and only that shape -- deliberately narrower
+    than "any period followed by a capital letter", which would also
+    fire on ordinary run-together initials like "G.M. Shipman" or "J.B.
+    Dominguez-Trujillo" inside a single note and mangle real names mid-
+    word. Notes that don't end in a parenthetical sign-off are left
+    merged rather than risk a bad split. Each surviving piece gets
+    wrapped in its own line so the CSS below can render the whole block
+    as small, muted, and visually distinct from the author names, the
+    same treatment `.ltx_role_affiliation`/`.ltx_role_email` already
+    get."""
+    for notes in article.select(".ltx_author_notes"):
+        if notes.find(True) is not None:
+            # Already has element children (e.g. per-author notes some
+            # other LaTeXML config emits as separate tags) -- leave alone.
+            continue
+        text = notes.get_text()
+        parts = [p.strip() for p in _AUTHOR_NOTE_GLUE_RE.split(text) if p.strip()]
+        if len(parts) <= 1:
+            continue
+        notes.clear()
+        for part in parts:
+            item = soup.new_tag("span", **{"class": "ltx_author_note_item"})
+            item.string = part
+            notes.append(item)
+
+
 def _extract_metadata(article) -> dict:
     """Pull paper metadata for the right-sidebar Info tab: title, authors
     (with affiliation/email), abstract, venue/year/DOI (from acmart's
@@ -3340,6 +3399,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
         el.decompose()
 
     _dedupe_document_title(article)
+    _fix_author_notes(soup, article)
     metadata = _extract_metadata(article)  # must run before _fix_notes decomposes the ACM front-matter notes
 
     _fix_notes(article)
