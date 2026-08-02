@@ -610,6 +610,31 @@ html.sidebar-left-collapsed .reader-sidebar-toggle { display: inline-flex; }
 .reader-stepper button:hover { background: var(--control-hover-bg); }
 .reader-stepper span { min-width: 2em; text-align: center; color: var(--fg); }
 
+/* Small on/off switch for the "Vim navigation" preference -- a plain
+   checkbox styled as a pill-shaped track + sliding thumb, matching the
+   popover's rounded, low-chrome visual language (same radii/colors as
+   the theme cards and steppers above) rather than a bare checkbox. */
+.reader-switch { position: relative; display: inline-block; width: 34px; height: 20px; flex-shrink: 0; }
+.reader-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.reader-switch-track {
+  position: absolute; inset: 0;
+  background: var(--rule); border-radius: 999px;
+  transition: background-color 0.15s ease;
+  pointer-events: none;
+}
+.reader-switch-track::before {
+  content: "";
+  position: absolute; left: 2px; top: 2px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--control-bg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  transition: transform 0.15s ease;
+}
+.reader-switch input:checked + .reader-switch-track { background: var(--link); }
+.reader-switch input:checked + .reader-switch-track::before { transform: translateX(14px); }
+.reader-switch input:focus-visible + .reader-switch-track { outline: 2px solid var(--link); outline-offset: 2px; }
+.reader-popover-hint { color: var(--muted); font-size: 0.82em; line-height: 1.4; margin-top: -0.15em; }
+
 .reader-selection-toolbar {
   position: fixed;
   z-index: 42;
@@ -1347,6 +1372,17 @@ READER_SCRIPT = """
     }
     if (mwDecBtn) mwDecBtn.addEventListener("click", function () { changeMaxWidth(-1); });
     if (mwIncBtn) mwIncBtn.addEventListener("click", function () { changeMaxWidth(1); });
+
+    // Vim navigation is off by default -- flip it on here and
+    // initKeyboardShortcuts() picks up the new setting on the very next
+    // keypress (it re-reads localStorage each time rather than caching).
+    var vimNavToggle = document.getElementById("vimNavToggle");
+    if (vimNavToggle) {
+      vimNavToggle.checked = !!s.vimNav;
+      vimNavToggle.addEventListener("change", function () {
+        saveSettings({ vimNav: vimNavToggle.checked });
+      });
+    }
   }
 
   /* -------------------------------------------------------------- sidebar */
@@ -2666,16 +2702,84 @@ READER_SCRIPT = """
   }
 
   /* ----------------------------------------------------- keyboard shortcuts */
+  // "[" / "]" (sidebar toggles) are always on. The vim-style h/j/k/l + gg/G
+  // keys below are opt-in (see the "Vim keys" switch in the Aa popover,
+  // wired in initTextStyle) since single-letter bindings would otherwise
+  // hijack normal typing -- settings.vimNav is re-read from localStorage on
+  // every keypress rather than cached, so toggling the switch takes effect
+  // immediately without needing to re-run this function.
   function initKeyboardShortcuts() {
+    var VIM_SCROLL_STEP = 100; // px per j/k press -- a few lines, not a full page
+    var GG_TIMEOUT_MS = 500; // max gap between the two "g" presses of "gg"
+    var lastGAt = 0;
+
     document.addEventListener("keydown", function (e) {
-      if (e.key !== "[" && e.key !== "]") return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       var t = e.target;
       var tag = t && t.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
-      e.preventDefault();
-      if (e.key === "[" && window.__readerToggleLeftSidebar) window.__readerToggleLeftSidebar();
-      else if (e.key === "]" && window.__readerToggleRightSidebar) window.__readerToggleRightSidebar();
+
+      if (e.key === "[" || e.key === "]") {
+        e.preventDefault();
+        if (e.key === "[" && window.__readerToggleLeftSidebar) window.__readerToggleLeftSidebar();
+        else if (e.key === "]" && window.__readerToggleRightSidebar) window.__readerToggleRightSidebar();
+        return;
+      }
+
+      if (!loadSettings().vimNav) return;
+
+      // Normally Shift+G already arrives as e.key === "G" (a real keyboard
+      // reports the shifted character), but some synthetic-input sources
+      // dispatch the unshifted key plus a shiftKey flag instead -- treat
+      // that the same way so "G" works regardless of how it was typed.
+      var key = (e.key === "g" && e.shiftKey) ? "G" : e.key;
+
+      switch (key) {
+        case "j":
+          e.preventDefault();
+          window.scrollBy(0, VIM_SCROLL_STEP);
+          lastGAt = 0;
+          break;
+        case "k":
+          e.preventDefault();
+          window.scrollBy(0, -VIM_SCROLL_STEP);
+          lastGAt = 0;
+          break;
+        case "h":
+          // There's no horizontal scroll in this single-column reader, so
+          // "h"/"l" (vim's left/right) are repurposed as the closest
+          // sensible analog: opening/closing the left/right sidebars,
+          // same as "["/"]" above.
+          e.preventDefault();
+          if (window.__readerToggleLeftSidebar) window.__readerToggleLeftSidebar();
+          lastGAt = 0;
+          break;
+        case "l":
+          e.preventDefault();
+          if (window.__readerToggleRightSidebar) window.__readerToggleRightSidebar();
+          lastGAt = 0;
+          break;
+        case "g":
+          // vim's "gg" is a two-key sequence, not a single binding -- only
+          // jump to the top if a previous "g" landed within the timeout,
+          // otherwise just remember this press and wait for the next one.
+          e.preventDefault();
+          var now = Date.now();
+          if (lastGAt && now - lastGAt < GG_TIMEOUT_MS) {
+            window.scrollTo(0, 0);
+            lastGAt = 0;
+          } else {
+            lastGAt = now;
+          }
+          break;
+        case "G":
+          e.preventDefault();
+          window.scrollTo(0, document.documentElement.scrollHeight);
+          lastGAt = 0;
+          break;
+        default:
+          lastGAt = 0;
+      }
     });
   }
 
@@ -3333,6 +3437,18 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
         <button id="maxWidthInc" aria-label="Increase line width">&plus;</button>
       </span>
     </div>
+  </div>
+
+  <div class="reader-popover-section-label">Navigation</div>
+  <div class="reader-popover-card">
+    <div class="reader-popover-row">
+      <span class="reader-popover-label">Vim keys</span>
+      <label class="reader-switch">
+        <input type="checkbox" id="vimNavToggle">
+        <span class="reader-switch-track"></span>
+      </label>
+    </div>
+    <div class="reader-popover-hint">h/j/k/l to move, gg/G to jump to top/bottom</div>
   </div>
 </div>
 
