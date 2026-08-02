@@ -2844,6 +2844,29 @@ def _wrap_listings(soup, article) -> None:
         listing.wrap(wrapper)
 
 
+def _dedupe_document_title(article) -> None:
+    """A paper can have more than one literal `\\title{...}` left in its
+    LaTeX source -- e.g. old draft titles the author never deleted or
+    commented out. In real LaTeX this is harmless: `\\title` just
+    overwrites the same internal macro each time it's called, so only
+    the last one is ever actually typeset by `\\maketitle`. LaTeXML
+    doesn't defer the same way -- it renders every `\\title` call as its
+    own `h1.ltx_title_document`, stacking every draft title in the
+    output -- each with its own copy of the authors block right after it,
+    since `\\author`/`\\maketitle` get re-paired with whatever `\\title`
+    preceded them. Keep only the last title (and its paired authors
+    block), matching what a real compile would show; this must run
+    before outline-building and metadata extraction (both currently just
+    take the *first* match) so they don't pick up a stale draft title
+    instead."""
+    titles = article.select("h1.ltx_title_document")
+    for stray in titles[:-1]:
+        authors = stray.find_next_sibling()
+        if authors is not None and "ltx_authors" in (authors.get("class") or []):
+            authors.decompose()
+        stray.decompose()
+
+
 def _extract_metadata(article) -> dict:
     """Pull paper metadata for the right-sidebar Info tab: title, authors
     (with affiliation/email), abstract, venue/year/DOI (from acmart's
@@ -3154,6 +3177,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
     for el in article.select(".ltx_page_logo, .ltx_navigation, nav"):
         el.decompose()
 
+    _dedupe_document_title(article)
     metadata = _extract_metadata(article)  # must run before _fix_notes decomposes the ACM front-matter notes
 
     _fix_notes(article)
