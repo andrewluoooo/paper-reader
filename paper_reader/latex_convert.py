@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import algorithm2e_patch, siunitx_patch, tcolorbox_patch
+from . import algorithm2e_patch, glossaries_patch, makecell_patch, siunitx_patch, tcolorbox_patch
 
 VECTOR_EXTS = {".pdf", ".eps"}
 INCLUDEGRAPHICS_RE = re.compile(r"(\\includegraphics(?:\s*\[[^\]]*\])?\{)([^}]*)(\})")
@@ -91,6 +91,89 @@ def _find_main_tex(src_dir: Path) -> Path:
     raise LatexConvertError(
         f"could not determine the main .tex file among: {[str(f) for f in tex_files]}"
     )
+
+
+_CITE_RE = re.compile(r"\\(?:[Cc]ite\w*|nocite)(?:\[[^\]]*\])*\{([^}]*)\}")
+_BIBLIOGRAPHY_RE = re.compile(r"\\bibliography\{([^}]*)\}")
+_BIBLIOGRAPHYSTYLE_RE = re.compile(r"\\bibliographystyle\{([^}]*)\}")
+# A minimal texlive install can be missing common publisher .bst files
+# (IEEEtran.bst isn't part of every scheme) even though the paper's own
+# \bibliographystyle{...} assumes it's there -- fall back to whichever of
+# bibtex's own always-bundled base styles is the closest match, rather
+# than failing outright.
+_BST_FALLBACKS = {"ieeetran": "ieeetr"}
+_DEFAULT_BST_FALLBACK = "unsrt"
+
+
+def _resolve_bst_style(style: str) -> str:
+    try:
+        found = subprocess.run(
+            ["kpsewhich", f"{style}.bst"], capture_output=True, text=True
+        ).stdout.strip()
+    except FileNotFoundError:
+        found = ""
+    return style if found else _BST_FALLBACKS.get(style.lower(), _DEFAULT_BST_FALLBACK)
+
+
+def _generate_bibliography(main_tex: Path, src_dir: Path) -> None:
+    """A paper citing via \\bibliography{...}/\\bibliographystyle{...} (the
+    classic BibTeX workflow) but shipping only the raw .bib database --
+    no pre-built .bbl -- relies on LaTeXML's own built-in BibTeX
+    emulation, which _use_prebuilt_bibliography's docstring already notes
+    is prone to silently leaving every \\cite unresolved for anything
+    even slightly modern about the .bib entries.
+
+    Run the real `bibtex` ourselves instead. It doesn't need a genuine,
+    LaTeX-compiled .aux -- just one with \\bibstyle/\\bibdata/\\citation
+    lines -- so there's no need to get the paper through a real
+    (potentially fragile) pdflatex pass first: build that minimal .aux
+    directly from every \\cite{...}/\\nocite{...} key actually used
+    across the source tree, then let bibtex do the real citation
+    resolution/formatting. The resulting .bbl feeds into
+    _use_prebuilt_bibliography()'s existing redirect."""
+    if main_tex.with_suffix(".bbl").is_file():
+        return  # already handled by _use_prebuilt_bibliography
+    if not shutil.which("bibtex"):
+        return
+
+    text = main_tex.read_text(encoding="utf-8", errors="ignore")
+    bib_match = _BIBLIOGRAPHY_RE.search(text)
+    if not bib_match:
+        return
+    bib_stems = [
+        name[:-4] if name.endswith(".bib") else name
+        for name in (n.strip() for n in bib_match.group(1).split(","))
+        if name
+    ]
+    if not bib_stems or not all((src_dir / f"{stem}.bib").is_file() for stem in bib_stems):
+        return
+
+    style_match = _BIBLIOGRAPHYSTYLE_RE.search(text)
+    style = _resolve_bst_style(style_match.group(1).strip() if style_match else "plain")
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for tex_file in src_dir.rglob("*.tex"):
+        for m in _CITE_RE.finditer(tex_file.read_text(encoding="utf-8", errors="ignore")):
+            for key in m.group(1).split(","):
+                key = key.strip()
+                if key and key not in seen:
+                    seen.add(key)
+                    keys.append(key)
+    if not keys:
+        return
+
+    aux_path = main_tex.with_suffix(".aux")
+    aux_lines = [f"\\bibstyle{{{style}}}", f"\\bibdata{{{','.join(bib_stems)}}}"]
+    aux_lines += [f"\\citation{{{key}}}" for key in keys]
+    aux_path.write_text("\n".join(aux_lines) + "\n", encoding="utf-8")
+
+    subprocess.run(["bibtex", aux_path.stem], cwd=main_tex.parent, capture_output=True, text=True)
+    # If bibtex didn't manage to produce a .bbl (e.g. a malformed .bib
+    # entry it can't recover from), just leave things as they were --
+    # _use_prebuilt_bibliography() no-ops and LaTeXML falls back to its
+    # own weaker built-in emulation rather than losing the bibliography
+    # outright.
 
 
 def _use_prebuilt_bibliography(main_tex: Path) -> None:
@@ -184,6 +267,7 @@ def convert(input_path: str, workdir: str) -> str:
 
     src_dir = _prepare_source_dir(input_path, workdir_p)
     main_tex = _find_main_tex(src_dir)
+    _generate_bibliography(main_tex, src_dir)
     _use_prebuilt_bibliography(main_tex)
 
     converted = _rasterize_vector_figures(src_dir)
@@ -191,6 +275,8 @@ def convert(input_path: str, workdir: str) -> str:
     algorithm2e_patch.patch_source_tree(src_dir)
     siunitx_patch.patch_source_tree(main_tex.parent)
     tcolorbox_patch.patch_source_tree(main_tex.parent)
+    makecell_patch.patch_source_tree(main_tex.parent)
+    glossaries_patch.patch_source_tree(main_tex.parent)
 
     out_html = main_tex.with_name("paper.html")
     log_path = main_tex.with_name("latexml_run.log")
