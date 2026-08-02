@@ -2702,16 +2702,25 @@ READER_SCRIPT = """
   }
 
   /* ----------------------------------------------------- keyboard shortcuts */
-  // "[" / "]" (sidebar toggles) are always on. The vim-style h/j/k/l + gg/G
-  // keys below are opt-in (see the "Vim keys" switch in the Aa popover,
-  // wired in initTextStyle) since single-letter bindings would otherwise
-  // hijack normal typing -- settings.vimNav is re-read from localStorage on
-  // every keypress rather than cached, so toggling the switch takes effect
-  // immediately without needing to re-run this function.
+  // "[" / "]" (sidebar toggles) are always on. The vim-style h/j/k/l/d/u +
+  // gg/G keys below are opt-in (see the "Vim keys" switch in the Aa
+  // popover, wired in initTextStyle) since single-letter bindings would
+  // otherwise hijack normal typing -- settings.vimNav is re-read from
+  // localStorage on every keypress rather than cached, so toggling the
+  // switch takes effect immediately without needing to re-run this
+  // function. All scrolling here is smooth (native scroll-behavior), not
+  // an instant jump.
   function initKeyboardShortcuts() {
     var VIM_SCROLL_STEP = 100; // px per j/k press -- a few lines, not a full page
     var GG_TIMEOUT_MS = 500; // max gap between the two "g" presses of "gg"
     var lastGAt = 0;
+
+    // Real vim's Ctrl-d/Ctrl-u move half a screen; borrowing that distance
+    // for plain "d"/"u" here (this reader has no other use for the bare
+    // keys, so no modifier is needed to disambiguate).
+    function bigScrollStep() {
+      return Math.round(window.innerHeight * 0.5);
+    }
 
     document.addEventListener("keydown", function (e) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -2737,12 +2746,22 @@ READER_SCRIPT = """
       switch (key) {
         case "j":
           e.preventDefault();
-          window.scrollBy(0, VIM_SCROLL_STEP);
+          window.scrollBy({ top: VIM_SCROLL_STEP, behavior: "smooth" });
           lastGAt = 0;
           break;
         case "k":
           e.preventDefault();
-          window.scrollBy(0, -VIM_SCROLL_STEP);
+          window.scrollBy({ top: -VIM_SCROLL_STEP, behavior: "smooth" });
+          lastGAt = 0;
+          break;
+        case "d":
+          e.preventDefault();
+          window.scrollBy({ top: bigScrollStep(), behavior: "smooth" });
+          lastGAt = 0;
+          break;
+        case "u":
+          e.preventDefault();
+          window.scrollBy({ top: -bigScrollStep(), behavior: "smooth" });
           lastGAt = 0;
           break;
         case "h":
@@ -2766,7 +2785,7 @@ READER_SCRIPT = """
           e.preventDefault();
           var now = Date.now();
           if (lastGAt && now - lastGAt < GG_TIMEOUT_MS) {
-            window.scrollTo(0, 0);
+            window.scrollTo({ top: 0, behavior: "smooth" });
             lastGAt = 0;
           } else {
             lastGAt = now;
@@ -2774,7 +2793,7 @@ READER_SCRIPT = """
           break;
         case "G":
           e.preventDefault();
-          window.scrollTo(0, document.documentElement.scrollHeight);
+          window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" });
           lastGAt = 0;
           break;
         default:
@@ -3448,7 +3467,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
         <span class="reader-switch-track"></span>
       </label>
     </div>
-    <div class="reader-popover-hint">h/j/k/l to move, gg/G to jump to top/bottom</div>
+    <div class="reader-popover-hint">h/j/k/l to move, d/u for bigger jumps, gg/G to jump to top/bottom</div>
   </div>
 </div>
 

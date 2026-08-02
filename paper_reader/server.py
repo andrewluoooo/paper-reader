@@ -350,11 +350,39 @@ button, input, select, textarea { font-family: inherit; }
 }
 .nav-tag-item:hover { background: var(--rule); color: var(--fg); }
 .nav-tag-item.active { background: var(--accent); color: #fff; }
-.sidebar-bottom { margin-top: 0.8em; padding-top: 0.6em; border-top: 1px solid var(--rule); flex-shrink: 0; }
+.sidebar-bottom { margin-top: 0.8em; padding-top: 0.6em; border-top: 1px solid var(--rule); flex-shrink: 0; position: relative; }
 .sidebar-footer { padding: 0.6em 0.6em 0.1em; font-size: 0.78em; color: var(--muted); }
 .sidebar-footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
 .sidebar-footer a:hover { color: var(--accent); }
 .footer-sep { color: var(--rule); }
+
+.prefs-popover {
+  position: absolute; left: 0; bottom: 100%; margin-bottom: 0.4em; z-index: 400;
+  width: 220px; background: var(--card-bg); border: 1px solid var(--rule);
+  border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); padding: 0.7em;
+}
+.prefs-popover[hidden] { display: none; }
+.prefs-popover-label {
+  font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--muted); margin: 0.3em 0.4em;
+}
+.prefs-popover-row { display: flex; align-items: center; justify-content: space-between; padding: 0.35em 0.4em 0.55em; }
+.prefs-theme-grid { display: flex; gap: 0.3em; padding: 0 0.4em 0.5em; }
+.prefs-theme-grid button {
+  flex: 1; padding: 0.4em 0; border-radius: 7px; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--fg); font-size: 0.78em; cursor: pointer;
+}
+.prefs-theme-grid button.active { border-color: var(--accent); color: var(--accent); }
+.prefs-switch { position: relative; display: inline-block; width: 34px; height: 20px; flex-shrink: 0; }
+.prefs-switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.prefs-switch-track { position: absolute; inset: 0; background: var(--rule); border-radius: 999px; transition: background 0.15s ease; }
+.prefs-switch-track::before {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+  background: #fff; border-radius: 50%; transition: transform 0.15s ease; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.prefs-switch input:checked + .prefs-switch-track { background: var(--accent); }
+.prefs-switch input:checked + .prefs-switch-track::before { transform: translateX(14px); }
+.prefs-switch input:focus-visible + .prefs-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* --------------------------------------------------------------- main col */
 .main-col { flex: 1; min-width: 0; overflow-y: auto; padding: 2.4em 3.2vw 8vh; }
@@ -643,6 +671,22 @@ input[type=file] { display: none; }
     <div class="sidebar-bottom">
       <button type="button" class="nav-item" id="navSearchBtn">Search</button>
       <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
+      <div class="prefs-popover" id="prefsPopover" hidden>
+        <div class="prefs-popover-label">Theme</div>
+        <div class="prefs-theme-grid" id="prefsThemeGrid">
+          <button type="button" data-value="auto">Auto</button>
+          <button type="button" data-value="light">Light</button>
+          <button type="button" data-value="dark">Dark</button>
+        </div>
+        <div class="prefs-popover-label">Navigation</div>
+        <div class="prefs-popover-row">
+          <span>Vim keys</span>
+          <label class="prefs-switch">
+            <input type="checkbox" id="prefsVimNavToggle">
+            <span class="prefs-switch-track"></span>
+          </label>
+        </div>
+      </div>
       <div class="sidebar-footer">
         <a href="/pipeline">Pipeline</a>
         <span class="footer-sep">&middot;</span>
@@ -777,13 +821,47 @@ input[type=file] { display: none; }
   function initTheme() {
     applyTheme(loadSettings().theme || "auto");
     var btn = document.getElementById("navPrefsBtn");
-    if (!btn) return;
-    btn.addEventListener("click", function () {
-      var cur = loadSettings().theme || "auto";
-      var next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
-      saveSettings({ theme: next });
-      applyTheme(next);
+    var pop = document.getElementById("prefsPopover");
+    var themeGrid = document.getElementById("prefsThemeGrid");
+    var vimToggle = document.getElementById("prefsVimNavToggle");
+    if (!btn || !pop) return;
+
+    function setActiveTheme(val) {
+      if (!themeGrid) return;
+      themeGrid.querySelectorAll("button").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.value === val);
+      });
+    }
+    setActiveTheme(loadSettings().theme || "auto");
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      pop.hidden = !pop.hidden;
     });
+    document.addEventListener("click", function (e) {
+      if (!pop.hidden && !pop.contains(e.target) && e.target !== btn) pop.hidden = true;
+    });
+
+    if (themeGrid) {
+      themeGrid.querySelectorAll("button").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var val = b.dataset.value;
+          saveSettings({ theme: val });
+          applyTheme(val);
+          setActiveTheme(val);
+        });
+      });
+    }
+
+    // Shares the same "paper_reader_settings" localStorage key/field the
+    // reader page's own Aa-popover vim toggle uses -- flipping it here
+    // takes effect the moment a paper is opened, no separate wiring needed.
+    if (vimToggle) {
+      vimToggle.checked = !!loadSettings().vimNav;
+      vimToggle.addEventListener("change", function () {
+        saveSettings({ vimNav: vimToggle.checked });
+      });
+    }
   }
 
   function fmtDate(ts) {
