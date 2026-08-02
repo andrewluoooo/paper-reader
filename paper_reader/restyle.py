@@ -639,23 +639,23 @@ html.sidebar-left-collapsed .reader-sidebar-toggle { display: inline-flex; }
   position: fixed;
   z-index: 42;
   display: flex;
-  gap: 0.35em;
+  gap: 0.45em;
   background: var(--control-bg);
   border: 1px solid var(--rule);
   border-radius: 999px;
   box-shadow: 0 6px 20px rgba(0,0,0,0.2);
-  padding: 0.4em;
+  padding: 0.55em;
 }
 .reader-selection-toolbar[hidden] { display: none; }
 .reader-swatch {
-  width: 24px; height: 24px; border-radius: 999px;
+  width: 30px; height: 30px; border-radius: 999px;
   border: 1px solid rgba(0,0,0,0.15);
   cursor: pointer;
   padding: 0;
 }
 .reader-selection-toolbar button.reader-remove,
 .reader-selection-toolbar button.reader-note-btn {
-  width: 24px; height: 24px; border-radius: 999px;
+  width: 30px; height: 30px; border-radius: 999px;
   border: 1px solid var(--rule); background: var(--control-bg); color: var(--fg);
   cursor: pointer; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center;
@@ -2096,8 +2096,8 @@ READER_SCRIPT = """
     else hideHandles();
   }
   function positionToolbar(rect) {
-    var top = Math.max(8, rect.top - 46);
-    var left = Math.max(8, Math.min(window.innerWidth - 170, rect.left + rect.width / 2 - 80));
+    var top = Math.max(8, rect.top - 58);
+    var left = Math.max(8, Math.min(window.innerWidth - 250, rect.left + rect.width / 2 - 120));
     selToolbar.style.top = top + "px";
     selToolbar.style.left = left + "px";
     selToolbar.hidden = false;
@@ -3508,8 +3508,8 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
   <button class="reader-swatch" data-color="green" style="background:var(--highlight-green)" aria-label="Highlight green"></button>
   <button class="reader-swatch" data-color="blue" style="background:var(--highlight-blue)" aria-label="Highlight blue"></button>
   <button class="reader-swatch" data-color="pink" style="background:var(--highlight-pink)" aria-label="Highlight pink"></button>
-  <button class="reader-remove" aria-label="Remove highlight">{_icon("x", 14)}</button>
-  <button class="reader-note-btn" aria-label="Add note">{_icon("message", 14)}</button>
+  <button class="reader-remove" aria-label="Remove highlight">{_icon("x", 17)}</button>
+  <button class="reader-note-btn" aria-label="Add note">{_icon("message", 17)}</button>
 </div>
 
 <div class="reader-hl-handle reader-hl-handle-start" id="hlHandleStart" hidden></div>
