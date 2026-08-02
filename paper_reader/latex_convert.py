@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import algorithm2e_patch
+from . import algorithm2e_patch, siunitx_patch
 
 VECTOR_EXTS = {".pdf", ".eps"}
 INCLUDEGRAPHICS_RE = re.compile(r"(\\includegraphics(?:\s*\[[^\]]*\])?\{)([^}]*)(\})")
@@ -189,11 +189,15 @@ def convert(input_path: str, workdir: str) -> str:
     converted = _rasterize_vector_figures(src_dir)
     _rewrite_includegraphics(src_dir, converted)
     algorithm2e_patch.patch_source_tree(src_dir)
+    siunitx_patch.patch_source_tree(main_tex.parent)
 
     out_html = main_tex.with_name("paper.html")
     log_path = main_tex.with_name("latexml_run.log")
 
-    cmd = ["latexmlc", f"--dest={out_html.name}", "--format=html5", main_tex.name]
+    # latexmlc's own default timeout (600s) is too tight for long papers with
+    # many figures/citations -- raise it rather than have a real, otherwise
+    # fine conversion get cut off mid-way and silently produce an empty stub.
+    cmd = ["latexmlc", f"--dest={out_html.name}", "--format=html5", "--timeout=1800", main_tex.name]
     proc = subprocess.run(cmd, cwd=main_tex.parent, capture_output=True, text=True)
     log_path.write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
 
