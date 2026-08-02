@@ -44,7 +44,7 @@ ALLOWED_UPLOAD_SUFFIXES = (".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", "
 HTML_SOURCE_SUFFIXES = (".html", ".htm")
 PDF_SOURCE_SUFFIXES = (".pdf",)
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
-PAPER_STATUSES = ("inbox", "later", "archive")
+PAPER_STATUSES = ("inbox", "later", "archive", "trash")
 
 # ---------------------------------------------------------------- pipeline jobs
 # Uploads run in their own thread (ThreadingHTTPServer) and can take anywhere
@@ -154,6 +154,7 @@ def _process_upload(filename: str, data: bytes) -> dict:
             "rawHtmlPath": raw_html_path,
             "tags": [],
             "status": "inbox",
+            "deletedAt": None,
         }
         items = _load_index()
         items.insert(0, entry)
@@ -183,8 +184,13 @@ def _rebuild_paper(entry: dict) -> bool:
 
 
 def _delete_paper(paper_id: str) -> bool:
-    """Remove a paper from the index and delete its stored HTML + raw
-    source. Returns False if no entry with that id exists."""
+    """Permanently remove a paper: its index entry, generated HTML, and
+    raw source are all deleted from disk with no way back. This is the
+    trash can's own "delete permanently" action (DELETE /api/papers/id)
+    -- ordinary deletion from inbox/later/archive is a soft delete via
+    _set_paper_status(paper_id, "trash") instead, which this function
+    has no involvement in. Returns False if no entry with that id
+    exists."""
     items = _load_index()
     remaining = [e for e in items if e["id"] != paper_id]
     if len(remaining) == len(items):
@@ -222,14 +228,23 @@ def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
 
 
 def _set_paper_status(paper_id: str, status: str) -> dict | None:
-    """Move a paper between inbox/later/archive. Returns the updated
-    entry, or None if no paper with that id exists. Caller is
-    responsible for validating status against PAPER_STATUSES."""
+    """Move a paper between inbox/later/archive/trash. Returns the
+    updated entry, or None if no paper with that id exists. Caller is
+    responsible for validating status against PAPER_STATUSES.
+
+    "trash" is a soft delete -- the entry, its generated HTML, and its
+    raw source are all left untouched on disk, exactly like any other
+    status. Only _delete_paper() (used for the trash can's own
+    "delete permanently" action) actually removes anything. deletedAt
+    just records when a paper most recently landed in the trash, so the
+    trash view can show "Deleted 3 days ago"; it's cleared again if the
+    paper is restored to any other status."""
     items = _load_index()
     entry = next((e for e in items if e["id"] == paper_id), None)
     if entry is None:
         return None
     entry["status"] = status
+    entry["deletedAt"] = time.time() if status == "trash" else None
     _save_index(items)
     return entry
 
@@ -710,6 +725,7 @@ input[type=file] { display: none; }
         <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
         <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
         <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
+        <button type="button" class="tab-btn" role="tab" data-status="trash">Trash</button>
       </div>
       <div class="sort-control">
         <svg class="sort-lead-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="6 13 12 19 18 13"></polyline></svg>
@@ -791,7 +807,8 @@ input[type=file] { display: none; }
   var TAB_EMPTY_MESSAGES = {
     inbox: "Nothing in your inbox.",
     later: "Nothing saved for later.",
-    archive: "Nothing archived yet."
+    archive: "Nothing archived yet.",
+    trash: "Trash is empty."
   };
   var THUMB_GRADIENTS = [
     ["#f97316", "#ef4444"], ["#8b5cf6", "#6366f1"], ["#06b6d4", "#3b82f6"],
@@ -1118,11 +1135,18 @@ input[type=file] { display: none; }
     setTimeout(collapse, CARD_SLIDE_MS + 40); // fallback
   }
 
+  // Archive and trash are both "soft" transitions worth a second chance
+  // (unlike moving to inbox/later, which is easy to immediately undo by
+  // just moving it back) -- both go through the same undo-toast path,
+  // just with their own verb in the toast message.
+  var UNDO_TOAST_VERBS = { archive: "Archived", trash: "Moved to trash" };
+
   function updatePaperStatus(p, status) {
     var prevStatus = p.status || "inbox";
     if (status === prevStatus) return;
     var leavesView = status !== currentTab;
-    if (status !== "archive") {
+    var verb = UNDO_TOAST_VERBS[status];
+    if (!verb) {
       function applyStatus() {
         commitPaperStatus(p, status);
         p.status = status;
@@ -1133,17 +1157,17 @@ input[type=file] { display: none; }
       return;
     }
     var undone = false;
-    function applyArchive() {
+    function applyChange() {
       if (undone) return;
-      p.status = "archive";
+      p.status = status;
       render(document.getElementById("searchBox").value);
       if (selectedPaper && selectedPaper.id === p.id) renderInfoPanel(p);
     }
-    if (leavesView) animateCardExit(p.id, applyArchive); else applyArchive();
+    if (leavesView) animateCardExit(p.id, applyChange); else applyChange();
     showUndoToast(
       "status:" + p.id,
-      'Archived "' + p.title + '"',
-      function () { commitPaperStatus(p, "archive"); },
+      verb + ' "' + p.title + '"',
+      function () { commitPaperStatus(p, status); },
       function () {
         undone = true;
         p.status = prevStatus;
@@ -1245,12 +1269,12 @@ input[type=file] { display: none; }
     var removeItem = document.createElement("button");
     removeItem.type = "button";
     removeItem.className = "danger";
-    removeItem.textContent = "Remove from library";
+    removeItem.textContent = currentTab === "trash" ? "Delete permanently" : "Move to Trash";
     removeItem.addEventListener("click", function (e) {
       e.preventDefault();
       e.stopPropagation();
       closeMoreMenu();
-      removePaper(p);
+      deletePaperFromCard(p);
     });
     menu.appendChild(infoItem);
     menu.appendChild(removeItem);
@@ -1399,7 +1423,8 @@ input[type=file] { display: none; }
       metaEl.appendChild(iconSpan.firstChild);
       var metaText = document.createElement("span");
       var authors = (p.authors || []).join(", ");
-      metaText.textContent = (authors ? authors + " \\u2022 " : "") + fmtDate(p.addedAt);
+      var dateLabel = (p.status === "trash" && p.deletedAt) ? ("Deleted " + fmtDate(p.deletedAt)) : fmtDate(p.addedAt);
+      metaText.textContent = (authors ? authors + " \\u2022 " : "") + dateLabel;
       metaEl.appendChild(metaText);
       a.appendChild(metaEl);
 
@@ -1443,13 +1468,14 @@ input[type=file] { display: none; }
       var deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "paper-action-btn danger-action";
-      deleteBtn.setAttribute("aria-label", "Delete (D)");
-      deleteBtn.title = "Delete (D)";
+      var deleteLabel = currentTab === "trash" ? "Delete permanently (D)" : "Delete (D)";
+      deleteBtn.setAttribute("aria-label", deleteLabel);
+      deleteBtn.title = deleteLabel;
       deleteBtn.innerHTML = TRASH_ICON;
       deleteBtn.addEventListener("click", function (e) {
         e.preventDefault();
         e.stopPropagation();
-        removePaper(p);
+        deletePaperFromCard(p);
       });
       actions.appendChild(deleteBtn);
 
@@ -1467,7 +1493,13 @@ input[type=file] { display: none; }
       .catch(function (e) { setStatus("Could not remove paper: " + e.message, "error"); });
   }
 
-  function removePaper(p) {
+  // The trash can's own "delete permanently" action -- unlike
+  // updatePaperStatus(p, "trash"), this actually removes the paper (via
+  // commitPaperRemoval -> DELETE /api/papers/id, which unlinks its HTML
+  // and raw source too) once the undo window lapses. Ordinary deletion
+  // from inbox/later/archive should call updatePaperStatus(p, "trash")
+  // instead, which is fully recoverable from the Trash tab.
+  function permanentlyDeletePaper(p) {
     if (selectedPaper && selectedPaper.id === p.id) closeInfoPanel();
     // `removed` and `undone` independently track which of "the exit
     // animation finished" and "the user hit undo" happened first, since
@@ -1484,7 +1516,7 @@ input[type=file] { display: none; }
     });
     showUndoToast(
       "delete:" + p.id,
-      'Removed "' + p.title + '"',
+      'Permanently deleted "' + p.title + '"',
       function () { commitPaperRemoval(p); },
       function () {
         undone = true;
@@ -1493,6 +1525,15 @@ input[type=file] { display: none; }
         render(document.getElementById("searchBox").value);
       }
     );
+  }
+
+  // What the trash-icon button and the "d" shortcut mean depends on
+  // where you are: everywhere else it's a soft delete (recoverable from
+  // the Trash tab), but from inside the Trash tab it's already trash --
+  // there's nowhere further to move it, so it deletes for real.
+  function deletePaperFromCard(p) {
+    if (currentTab === "trash") permanentlyDeletePaper(p);
+    else updatePaperStatus(p, "trash");
   }
 
   function loadPapers() {
@@ -1759,7 +1800,7 @@ input[type=file] { display: none; }
       updatePaperStatus(hp, "archive");
     } else if (e.key === "d" || e.key === "D") {
       e.preventDefault();
-      removePaper(hp);
+      deletePaperFromCard(hp);
     }
   });
 
