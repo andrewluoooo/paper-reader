@@ -36,6 +36,11 @@ ICONS = {
     "edit": '<path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>',
     "message": '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
     "chevron-right": '<polyline points="9 6 15 12 9 18"/>',
+    "copy": '<rect x="9" y="9" width="13" height="13" rx="2"/>'
+    '<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    "check": '<polyline points="20 6 9 17 4 12"/>',
+    "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>'
+    '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
 }
 
 
@@ -72,6 +77,13 @@ CSS = """
   --highlight-green-line: #2fa056;
   --highlight-blue-line: #2a7de1;
   --highlight-pink-line: #d84c96;
+
+  /* Deliberately not redefined for dark mode below -- a paper's own
+     \\lstset syntax colors are baked into the HTML as inline styles
+     (calibrated for a light background) and aren't theme-aware, so
+     code blocks stay in this one light, IDE-like treatment regardless
+     of the reader's own light/dark toggle. */
+  --code-bg: #f6f5f2;
 
   --reader-font-size: 19px;
   --reader-line-height: 1.65;
@@ -342,19 +354,19 @@ figure.ltx_algorithm, figure.ltx_float_algorithm {
 .ltx_listing_scroll {
   overflow-x: auto;
   border: 1px solid var(--rule);
-  border-radius: 8px;
-  padding: 0.7em 1em;
-  margin: 1.4em 0;
+  border-radius: 10px;
+  margin: 1.7em 0;
   font-size: 0.9em;
+  background: var(--code-bg);
 }
 /* the enclosing algorithm float already draws its own box; don't nest a second one */
 figure.ltx_algorithm .ltx_listing_scroll,
 figure.ltx_float_algorithm .ltx_listing_scroll {
   border: none;
   border-radius: 0;
-  padding: 0;
   margin: 0;
   font-size: 1em;
+  background: none;
 }
 figure.ltx_float_algorithm figcaption.ltx_caption {
   margin: 0 0 0.4em;
@@ -362,13 +374,52 @@ figure.ltx_float_algorithm figcaption.ltx_caption {
   color: var(--fg);
   font-weight: 600;
 }
+/* A small header bar -- language name (from LaTeXML's own
+   ltx_lst_language_* class) on the left, copy/download icon buttons on
+   the right -- built by _style_listing_toolbar(); only appears on
+   genuine `listings`-package code (algorithm/pseudocode floats, which
+   share the same .ltx_listing markup, don't get one). */
+.ltx_code_toolbar {
+  display: flex;
+  align-items: center;
+  padding: 0.5em 1.1em;
+  border-bottom: 1px solid var(--rule);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+}
+.ltx_code_lang {
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+}
+.ltx_code_toolbar_btns { display: flex; gap: 0.2em; margin-left: auto; }
+.ltx_code_copy_btn, .ltx_code_download_btn {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.35em;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.ltx_code_copy_btn:hover, .ltx_code_download_btn:hover { color: var(--fg); background: var(--rule); }
+.ltx_code_copy_btn.copied { color: var(--highlight-green-line); }
+.ltx_code_copy_btn svg, .ltx_code_download_btn svg { width: 15px; height: 15px; display: block; }
+/* The "bigger margins" the code itself sits in -- generous top/bottom
+   room on the body, generous left/right room on every line (so it
+   reads as an editor gutter, not text crammed against the border). */
+.ltx_listing_body { padding: 1em 0; }
 /* LaTeXML represents a code line's leading indentation as a run of
    literal space characters inside a plain <span> (not a <pre>), so
    without an explicit white-space rule the browser's normal HTML
    whitespace-collapsing rules flatten any run of 2+ spaces down to one --
    silently destroying indentation for every listings-based code block,
    not just deeply-indented ones. */
-.ltx_listingline { line-height: 1.25; white-space: pre; }
+.ltx_listingline { line-height: 1.5; white-space: pre; padding: 0 1.4em; }
 .ltx_tag_listingline {
   display: inline-block;
   min-width: 1.6em;
@@ -1988,6 +2039,34 @@ READER_SCRIPT = """
     btn.disabled = true;
     setTimeout(function () { btn.textContent = original; btn.disabled = false; }, 1200);
   }
+
+  // Copy-to-clipboard button on each listings-package code block's
+  // toolbar (added by restyle.py's _style_listing_toolbar). Reads the
+  // plain code text straight from .ltx_listingline elements -- by the
+  // time this runs, _clean_listing_whitespace() has already stripped
+  // the incidental structural whitespace, so textContent is exactly the
+  // code as written.
+  var CHECK_ICON_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="20 6 9 17 4 12"></polyline></svg>';
+  function initCodeCopyButtons() {
+    document.querySelectorAll(".ltx_code_copy_btn").forEach(function (btn) {
+      var originalHTML = btn.innerHTML;
+      btn.addEventListener("click", function () {
+        var body = btn.closest(".ltx_listing") && btn.closest(".ltx_listing").querySelector(".ltx_listing_body");
+        if (!body) return;
+        var text = Array.prototype.map.call(
+          body.querySelectorAll(".ltx_listingline"),
+          function (l) { return l.textContent; }
+        ).join("\\n");
+        copyToClipboard(text).then(function () {
+          btn.innerHTML = CHECK_ICON_SVG;
+          btn.classList.add("copied");
+          setTimeout(function () { btn.innerHTML = originalHTML; btn.classList.remove("copied"); }, 1200);
+        });
+      });
+    });
+  }
   function highlightMarkdown(h) {
     var text = (h.text || "").replace(/\\s+/g, " ").trim();
     var lines = ["> " + text];
@@ -2977,6 +3056,7 @@ READER_SCRIPT = """
     initDropUpload();
     initKeyboardShortcuts();
     initAnchorNav();
+    initCodeCopyButtons();
   });
 })();
 """
@@ -3020,6 +3100,102 @@ def _wrap_tables(soup, article) -> None:
     for table in article.find_all("table", class_="ltx_tabular"):
         wrapper = soup.new_tag("div", **{"class": "ltx_fit_scroll ltx_table_scroll"})
         table.wrap(wrapper)
+
+
+def _clean_listing_whitespace(article) -> None:
+    """LaTeXML pretty-prints its own HTML source, so every
+    `<div class="ltx_listingline">` has an incidental leading/trailing
+    newline sitting directly in the div (between the tag and its first/
+    last <span> child) -- pure source formatting, not code content.
+    Under the default `white-space: normal` that's invisible (collapsed
+    away like any other HTML whitespace), but `.ltx_listingline` needs
+    `white-space: pre` for real indentation spans to survive at all, and
+    once that's set those incidental newlines become visible blank lines
+    above and below every single line of code. Strip only bare
+    whitespace-only text nodes that are direct children of the line --
+    the actual indentation lives in ltx_lst_space *spans*, untouched."""
+    for line in article.find_all("div", class_="ltx_listingline"):
+        for child in list(line.children):
+            if isinstance(child, NavigableString) and not child.strip():
+                child.extract()
+
+
+_LANGUAGE_LABELS = {
+    "c": "C", "c++": "C++", "cpp": "C++", "python": "Python", "java": "Java",
+    "javascript": "JavaScript", "verilog": "Verilog", "vhdl": "VHDL",
+    "bash": "Bash", "sh": "Shell", "matlab": "MATLAB", "sql": "SQL", "r": "R",
+    "haskell": "Haskell", "rust": "Rust", "go": "Go", "html": "HTML",
+}
+
+
+def _style_listing_toolbar(soup, article) -> None:
+    """Give genuine `listings`-package code blocks (identified by the
+    raw-source download link LaTeXML's real binding emits -- algorithm/
+    pseudocode floats share the same .ltx_listing markup but don't have
+    one) a small header bar: a language label pulled from LaTeXML's own
+    `ltx_lst_language_*` class, plus copy/download icon buttons in place
+    of the bare "download" link's original "⬇" glyph. Also drops
+    the paper's own inline background-color (from its \\lstset) so the
+    single, theme-consistent --code-bg treatment applies everywhere
+    instead of one arbitrary, non-dark-mode-aware color per paper."""
+    for listing in article.find_all("div", class_="ltx_listing"):
+        data_wrap = listing.find("div", class_="ltx_listing_data", recursive=False)
+        if data_wrap is None:
+            continue
+        link = data_wrap.find("a")
+        if link is not None:
+            link.extract()
+        data_wrap.decompose()
+
+        style = listing.get("style")
+        if style:
+            kept = [
+                d.strip()
+                for d in style.split(";")
+                if d.strip() and not d.strip().lower().startswith("background-color")
+            ]
+            if kept:
+                listing["style"] = "; ".join(kept) + ";"
+            else:
+                del listing["style"]
+
+        lang = None
+        for cls in listing.get("class", []):
+            if cls.startswith("ltx_lst_language_"):
+                lang = cls[len("ltx_lst_language_") :]
+                break
+
+        body = soup.new_tag("div", **{"class": "ltx_listing_body"})
+        for line in listing.find_all("div", class_="ltx_listingline", recursive=False):
+            body.append(line.extract())
+
+        listing.clear()  # drop any remaining stray whitespace text nodes
+
+        toolbar = soup.new_tag("div", **{"class": "ltx_code_toolbar"})
+        if lang:
+            label = _LANGUAGE_LABELS.get(lang.lower(), lang.capitalize())
+            lang_span = soup.new_tag("span", **{"class": "ltx_code_lang"})
+            lang_span.string = label
+            toolbar.append(lang_span)
+        btns = soup.new_tag("div", **{"class": "ltx_code_toolbar_btns"})
+        copy_btn = soup.new_tag(
+            "button",
+            type="button",
+            **{"class": "ltx_code_copy_btn", "aria-label": "Copy code", "title": "Copy code"},
+        )
+        copy_btn.append(BeautifulSoup(_icon("copy", 15), "html.parser"))
+        btns.append(copy_btn)
+        if link is not None:
+            link["class"] = [*link.get("class", []), "ltx_code_download_btn"]
+            link["aria-label"] = "Download raw code"
+            link["title"] = "Download raw code"
+            link.clear()
+            link.append(BeautifulSoup(_icon("download", 15), "html.parser"))
+            btns.append(link)
+        toolbar.append(btns)
+
+        listing.append(toolbar)
+        listing.append(body)
 
 
 def _wrap_listings(soup, article) -> None:
@@ -3424,6 +3600,8 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
     _fix_citations(article)
     _abbreviate_author_year_citations(article)
     _strip_latexml_scaling_wrappers(article)
+    _clean_listing_whitespace(article)
+    _style_listing_toolbar(soup, article)
     _wrap_tables(soup, article)
     _wrap_listings(soup, article)
     _inline_images(article, base_dir)
