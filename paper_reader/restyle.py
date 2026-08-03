@@ -362,7 +362,13 @@ figure.ltx_float_algorithm figcaption.ltx_caption {
   color: var(--fg);
   font-weight: 600;
 }
-.ltx_listingline { line-height: 1.25; }
+/* LaTeXML represents a code line's leading indentation as a run of
+   literal space characters inside a plain <span> (not a <pre>), so
+   without an explicit white-space rule the browser's normal HTML
+   whitespace-collapsing rules flatten any run of 2+ spaces down to one --
+   silently destroying indentation for every listings-based code block,
+   not just deeply-indented ones. */
+.ltx_listingline { line-height: 1.25; white-space: pre; }
 .ltx_tag_listingline {
   display: inline-block;
   min-width: 1.6em;
