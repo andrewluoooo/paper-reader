@@ -157,8 +157,11 @@ html, body {
 body {
   font-family: var(--reader-font-family);
   line-height: var(--reader-line-height);
-  font-size: var(--reader-font-size);
+  font-size: 16px;
   -webkit-font-smoothing: antialiased;
+}
+main.page {
+  font-size: var(--reader-font-size);
 }
 /* A thin fixed bar at the very top of the viewport showing how far down
    the paper you've scrolled -- stays in view above everything else

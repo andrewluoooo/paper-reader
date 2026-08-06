@@ -186,6 +186,22 @@ def _rebuild_paper(entry: dict) -> bool:
     return True
 
 
+
+def _trigger_git_sync():
+    import threading, subprocess
+    lib = LIBRARY_DIR
+    if not (lib / ".git").exists():
+        return
+    def sync_task():
+        try:
+            subprocess.run(["git", "add", "."], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "commit", "-m", "Auto-sync update"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "pull", "origin", "main", "--rebase", "--strategy-option=ours"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["git", "push", "origin", "main"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    threading.Thread(target=sync_task, daemon=True).start()
+
 def _delete_paper(paper_id: str) -> bool:
     """Permanently remove a paper: its index entry, generated HTML, and
     raw source are all deleted from disk with no way back. This is the
@@ -199,6 +215,7 @@ def _delete_paper(paper_id: str) -> bool:
     if len(remaining) == len(items):
         return False
     _save_index(remaining)
+    _trigger_git_sync()
     html_path = LIBRARY_DIR / f"{paper_id}.html"
     if html_path.is_file():
         html_path.unlink()
@@ -227,6 +244,7 @@ def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
         seen.setdefault(t.lower(), t)
     entry["tags"] = sorted(seen.values(), key=str.lower)
     _save_index(items)
+    _trigger_git_sync()
     return entry
 
 
@@ -249,6 +267,7 @@ def _set_paper_status(paper_id: str, status: str) -> dict | None:
     entry["status"] = status
     entry["deletedAt"] = time.time() if status == "trash" else None
     _save_index(items)
+    _trigger_git_sync()
     return entry
 
 
@@ -418,6 +437,16 @@ html.library-sidebar-collapsed .sidebar {
 .prefs-switch input:checked + .prefs-switch-track { background: var(--accent); }
 .prefs-switch input:checked + .prefs-switch-track::before { transform: translateX(14px); }
 .prefs-switch input:focus-visible + .prefs-switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.prefs-input {
+  width: 100%; box-sizing: border-box; padding: 0.4em 0.5em; border-radius: 6px; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--fg); font-size: 0.78em; outline: none;
+}
+.prefs-input:focus { border-color: var(--accent); }
+.prefs-btn {
+  flex: 1; padding: 0.4em 0; border-radius: 6px; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--fg); font-size: 0.78em; cursor: pointer;
+}
+.prefs-btn:hover { background: var(--rule); }
 
 /* --------------------------------------------------------------- main col */
 .main-col { flex: 1; min-width: 0; overflow-y: auto; padding: 2.4em 3.2vw 8vh; }
@@ -783,6 +812,15 @@ input[type=file] { display: none; }
             <span class="prefs-switch-track"></span>
           </label>
         </div>
+        <div class="prefs-popover-label" style="margin-top: 0.6em;">Sync</div>
+        <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.4em; padding-bottom: 0.2em;">
+          <input type="text" id="prefsGitUrl" placeholder="git@github.com:user/repo.git" class="prefs-input">
+          <div style="display: flex; gap: 0.4em;">
+            <button type="button" class="prefs-btn" id="prefsGitSetupBtn">Setup</button>
+            <button type="button" class="prefs-btn" id="prefsGitSyncBtn">Sync Now</button>
+          </div>
+          <div id="prefsGitStatus" style="font-size: 0.75em; color: var(--muted); text-align: center; margin-top: 0.2em;">Not configured</div>
+        </div>
       </div>
       <div class="sidebar-footer">
         <a href="/pipeline">Pipeline</a>
@@ -981,6 +1019,40 @@ input[type=file] { display: none; }
       vimToggle.checked = !!loadSettings().vimNav;
       vimToggle.addEventListener("change", function () {
         saveSettings({ vimNav: vimToggle.checked });
+      });
+    }
+
+    var gitUrlInput = document.getElementById("prefsGitUrl");
+    var gitSetupBtn = document.getElementById("prefsGitSetupBtn");
+    var gitSyncBtn = document.getElementById("prefsGitSyncBtn");
+    var gitStatus = document.getElementById("prefsGitStatus");
+    if (gitUrlInput) {
+      var initialUrl = loadSettings().gitUrl;
+      gitUrlInput.value = initialUrl || "";
+      if (initialUrl) {
+        gitStatus.textContent = "Ready to sync.";
+      }
+      gitUrlInput.addEventListener("input", function() {
+        saveSettings({ gitUrl: gitUrlInput.value });
+      });
+      gitSetupBtn.addEventListener("click", function() {
+        if (!gitUrlInput.value) { gitStatus.textContent = "Please enter a URL first."; return; }
+        gitStatus.textContent = "Setting up...";
+        fetch("/api/git/setup", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: gitUrlInput.value })
+        }).then(function(r) { return r.json(); }).then(function(res) {
+          if (res.ok) gitStatus.textContent = "Setup complete! Ready to sync.";
+          else gitStatus.textContent = "Setup failed: " + (res.error || "Unknown error");
+        }).catch(function() { gitStatus.textContent = "Network error during setup."; });
+      });
+      gitSyncBtn.addEventListener("click", function() {
+        gitStatus.textContent = "Syncing...";
+        fetch("/api/git/sync", { method: "POST" })
+        .then(function(r) { return r.json(); }).then(function(res) {
+          if (res.ok) { gitStatus.textContent = "Synced successfully."; loadPapers(); }
+          else gitStatus.textContent = "Sync failed: " + (res.error || "Unknown error");
+        }).catch(function() { gitStatus.textContent = "Network error during sync."; });
       });
     }
   }
@@ -1802,14 +1874,25 @@ input[type=file] { display: none; }
       spinner.hidden = false;
       spinner.classList.add("spinning");
       label.hidden = false;
-      label.textContent = "Refreshing\\u2026";
-      loadPapers();
-      // Hold the "Refreshing..." state briefly even though the fetch
-      // itself is usually near-instant, so it doesn't just flash by.
-      setTimeout(function () {
-        refreshing = false;
-        hide(300);
-      }, 500);
+      if (loadSettings().gitUrl) {
+        label.textContent = "Syncing & Refreshing\\u2026";
+        fetch("/api/git/sync", { method: "POST" })
+          .then(function() { loadPapers(); })
+          .catch(function() { loadPapers(); })
+          .finally(function() {
+            setTimeout(function () {
+              refreshing = false;
+              hide(300);
+            }, 500);
+          });
+      } else {
+        label.textContent = "Refreshing\\u2026";
+        loadPapers();
+        setTimeout(function () {
+          refreshing = false;
+          hide(300);
+        }, 500);
+      }
     }
 
     window.addEventListener("wheel", function (e) {
@@ -2364,6 +2447,60 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/upload":
             self._handle_upload(parsed)
+
+        elif parsed.path == "/api/git/setup":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            try:
+                import json, subprocess
+                body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+                url = body.get("url")
+                if not url:
+                    self._send_json({"error": "missing url"}, 400)
+                    return
+                lib = LIBRARY_DIR
+                subprocess.run(["git", "init"], cwd=lib, check=False)
+                
+                # Ensure server logs are ignored so they don't block rebases
+                gitignore = lib / ".gitignore"
+                if not gitignore.exists():
+                    gitignore.write_text("server.log\nserver.pid\n")
+                    
+                subprocess.run(["git", "remote", "remove", "origin"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                res = subprocess.run(["git", "remote", "add", "origin", url], cwd=lib, capture_output=True, text=True)
+                if res.returncode != 0:
+                    self._send_json({"error": res.stderr}, 400)
+                    return
+                subprocess.run(["git", "fetch", "origin"], cwd=lib, check=False)
+                subprocess.run(["git", "branch", "-M", "main"], cwd=lib, check=False)
+                
+                # Commit any unstaged local files first before pulling, to prevent rebase errors
+                subprocess.run(["git", "add", "."], cwd=lib, check=False)
+                subprocess.run(["git", "commit", "-m", "Auto-sync update"], cwd=lib, check=False)
+                
+                pull_res = subprocess.run(["git", "pull", "origin", "main", "--rebase", "--strategy-option=ours"], cwd=lib, capture_output=True, text=True)
+                if pull_res.returncode != 0 and "couldn't find remote ref" not in pull_res.stderr:
+                    self._send_json({"error": pull_res.stderr}, 400)
+                    return
+                self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
+        elif parsed.path == "/api/git/sync":
+            try:
+                import subprocess
+                lib = LIBRARY_DIR
+                if not (lib / ".git").exists():
+                    self._send_json({"error": "Not configured"}, 400)
+                    return
+                subprocess.run(["git", "add", "."], cwd=lib, check=False)
+                subprocess.run(["git", "commit", "-m", "Manual sync update"], cwd=lib, check=False)
+                pull = subprocess.run(["git", "pull", "origin", "main", "--rebase", "--strategy-option=ours"], cwd=lib, capture_output=True, text=True)
+                push = subprocess.run(["git", "push", "origin", "main"], cwd=lib, capture_output=True, text=True)
+                if push.returncode != 0:
+                    self._send_json({"error": push.stderr}, 400)
+                else:
+                    self._send_json({"ok": True})
+            except Exception as e:
+                self._send_json({"error": str(e)}, 500)
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -2456,6 +2593,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": f"unexpected error: {html.escape(str(e))}"}, 500)
             return
 
+        _trigger_git_sync()
         self._send_json(entry)
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
