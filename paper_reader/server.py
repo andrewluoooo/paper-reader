@@ -812,6 +812,10 @@ input[type=file] { display: none; }
             <span class="prefs-switch-track"></span>
           </label>
         </div>
+        <div class="prefs-popover-row" style="margin-top: 0.4em;">
+          <span>Palette Key</span>
+          <input type="text" id="prefsPaletteKey" class="prefs-input" style="width: 40px; text-align: center; text-transform: lowercase;" maxlength="1">
+        </div>
         <div class="prefs-popover-label" style="margin-top: 0.6em;">Sync</div>
         <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.4em; padding-bottom: 0.2em;">
           <input type="text" id="prefsGitUrl" placeholder="git@github.com:user/repo.git" class="prefs-input">
@@ -1053,6 +1057,15 @@ input[type=file] { display: none; }
           if (res.ok) { gitStatus.textContent = "Synced successfully."; loadPapers(); }
           else gitStatus.textContent = "Sync failed: " + (res.error || "Unknown error");
         }).catch(function() { gitStatus.textContent = "Network error during sync."; });
+      });
+    }
+
+    var pk = document.getElementById("prefsPaletteKey");
+    if (pk) {
+      pk.value = loadSettings().paletteShortcut || "p";
+      pk.addEventListener("input", function() {
+        var v = pk.value.toLowerCase().trim() || "p";
+        saveSettings({ paletteShortcut: v });
       });
     }
   }
@@ -2429,11 +2442,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (stdlib method name)
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            self._send_html(HOME_PAGE_HTML)
+            from .palette import get_palette_html
+            self._send_html(HOME_PAGE_HTML.replace('</body>', get_palette_html('home') + '</body>'))
         elif parsed.path == "/about":
             self._send_html(ABOUT_PAGE_HTML)
         elif parsed.path == "/pipeline":
-            self._send_html(PIPELINE_PAGE_HTML)
+            from .palette import get_palette_html
+            self._send_html(PIPELINE_PAGE_HTML.replace('</body>', get_palette_html('home') + '</body>'))
         elif parsed.path == "/api/papers":
             self._send_json(_load_index())
         elif parsed.path == "/api/pipeline-status":

@@ -13,8 +13,11 @@ import json
 import mimetypes
 import os
 import re
+from pathlib import Path
+from typing import Any
 
 from bs4 import BeautifulSoup, NavigableString
+from .palette import get_palette_html
 
 # Toolbar/UI icons, in the style of Feather Icons (MIT licensed,
 # https://feathericons.com/) -- thin-stroke, no fill, 24x24 grid. Used
@@ -3811,6 +3814,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 
 <script>{FIT_SCRIPT}</script>
 <script>{READER_SCRIPT}</script>
+{get_palette_html('reader')}
 </body>
 </html>
 """
