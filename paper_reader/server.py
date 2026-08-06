@@ -285,11 +285,14 @@ def rebuild_library(quiet: bool = False) -> tuple[int, int]:
 HOME_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
 <script>
 (function () {
   try {
     var s = JSON.parse(localStorage.getItem("paper_reader_settings") || "{}");
     if (s.theme === "light" || s.theme === "dark") document.documentElement.setAttribute("data-theme", s.theme);
+    if (s.librarySidebarHidden) document.documentElement.classList.add("library-sidebar-collapsed");
+    if (s.libraryInfoPanelHidden) document.documentElement.classList.add("library-info-collapsed");
   } catch (e) {}
 })();
 </script>
@@ -303,13 +306,24 @@ HOME_PAGE_HTML = """<!doctype html>
   --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --sidebar-bg: #f7f5f1;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --sidebar-bg: #1c1b19; }
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; --sidebar-bg: #222222; }
 }
 :root[data-theme="light"] {
   --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --sidebar-bg: #f7f5f1;
 }
 :root[data-theme="dark"] {
-  --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --sidebar-bg: #1c1b19;
+  --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; --sidebar-bg: #222222;
+}
+
+:root[data-theme="dark"] [style*="color: #000"],
+:root[data-theme="dark"] [style*="color:#000"],
+:root[data-theme="dark"] [style*="color: black"],
+:root[data-theme="dark"] [style*="color:black"],
+:root:not([data-theme="light"]) [style*="color: #000"],
+:root:not([data-theme="light"]) [style*="color:#000"],
+:root:not([data-theme="light"]) [style*="color: black"],
+:root:not([data-theme="light"]) [style*="color:black"] {
+  color: inherit !important;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -338,22 +352,25 @@ button, input, select, textarea { font-family: inherit; }
 
 /* ---------------------------------------------------------------- sidebar */
 .sidebar {
-  width: 234px; flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--rule);
-  display: flex; flex-direction: column; padding: 1.1em 0.9em; overflow-y: auto;
+  flex: 0 0 234px; width: 234px; flex-shrink: 0; background: var(--sidebar-bg); border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; padding: 1.1em 0.9em; overflow-x: hidden; overflow-y: auto;
   font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
-  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition: flex-basis 0.22s ease, width 0.22s ease, padding-left 0.22s ease, padding-right 0.22s ease, border-right-color 0.22s ease, opacity 0.15s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+html.library-sidebar-collapsed .sidebar {
+  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-right-color: transparent; opacity: 0;
 }
 .sidebar-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6em; padding: 0 0.3em; margin-bottom: 1.4em; }
-.brand { flex: 1; min-width: 0; font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; font-weight: 600; font-size: 1.05em; line-height: 1.25; }
+.brand { display: flex; align-items: center; gap: 0.35em; flex: 1; min-width: 0; font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; font-weight: 600; font-size: 1.05em; line-height: 1.25; }
 .sidebar-add-btn { width: 28px; height: 28px; font-size: 1.2em; line-height: 1; }
 .sidebar-nav { display: flex; flex-direction: column; gap: 0.1em; flex: 1; min-height: 0; }
 .nav-item {
-  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  display: flex; align-items: center; gap: 0.5em; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
   padding: 0.5em 0.6em; border-radius: 7px; font-size: 0.92em; color: var(--fg);
   transition: background-color 0.15s ease;
 }
 .nav-item:hover { background: var(--rule); }
-.nav-item-sub { color: var(--muted); font-size: 0.85em; float: right; }
+.nav-item-sub { color: var(--muted); font-size: 0.85em; margin-left: auto; }
 .nav-section-label {
   margin: 1.1em 0 0.3em; padding: 0 0.6em; font-size: 0.72em; font-weight: 600; letter-spacing: 0.05em;
   text-transform: uppercase; color: var(--muted);
@@ -361,7 +378,7 @@ button, input, select, textarea { font-family: inherit; }
 .nav-tags { display: flex; flex-direction: column; gap: 0.05em; overflow-y: auto; min-height: 0; }
 .nav-tags-empty { padding: 0.4em 0.6em; font-size: 0.82em; color: var(--muted); }
 .nav-tag-item {
-  display: block; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
+  display: flex; align-items: center; gap: 0.4em; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
   padding: 0.4em 0.6em; border-radius: 7px; font-size: 0.85em; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   transition: background-color 0.15s ease, color 0.15s ease;
@@ -412,7 +429,7 @@ button, input, select, textarea { font-family: inherit; }
 .topbar-title svg { width: 11px; height: 11px; color: var(--muted); }
 .tabs-row { display: flex; align-items: flex-end; gap: 1.6em; flex: 1; }
 .tab-btn {
-  background: none; border: none; padding: 0 0 0.7em; margin-bottom: -1px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4em; background: none; border: none; padding: 0 0 0.7em; margin-bottom: -1px; cursor: pointer;
   font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; font-size: 0.82em; font-weight: 600;
   letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
   border-bottom: 2px solid transparent;
@@ -475,8 +492,15 @@ input[type=file] { display: none; }
   border-color: var(--accent);
   transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.07);
 }
-.paper-card.selected { border-color: var(--rule); background: var(--rule); }
-.paper-card.selected::before { background-color: var(--accent); }
+.paper-card.selected { border-color: var(--accent); }
+
+.card-progress-track {
+  position: absolute; left: 0; bottom: 0; right: 0; height: 3px;
+  background: transparent; overflow: hidden; border-radius: 0 0 9px 9px; pointer-events: none;
+}
+.card-progress-fill {
+  height: 100%; background: var(--accent); opacity: 0.8;
+}
 .paper-thumb {
   flex-shrink: 0; width: 44px; height: 44px; border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
@@ -550,11 +574,14 @@ input[type=file] { display: none; }
 
 /* --------------------------------------------------------------- info panel */
 .info-panel {
-  width: 300px; flex-shrink: 0; border-left: 1px solid var(--rule); overflow-y: auto;
+  flex: 0 0 300px; width: 300px; flex-shrink: 0; border-left: 1px solid var(--rule); overflow-x: hidden; overflow-y: auto;
   font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
-  animation: panelSlideIn 0.18s ease;
+  transition: flex-basis 0.22s ease, width 0.22s ease, padding-left 0.22s ease, padding-right 0.22s ease, border-left-color 0.22s ease, opacity 0.15s ease, background-color 0.2s ease, border-color 0.2s ease;
 }
-.info-panel[hidden] { display: none; }
+.info-panel[hidden], html.library-info-collapsed .info-panel {
+  display: block; /* Override default hidden behavior so it can animate */
+  flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-left-color: transparent; opacity: 0;
+}
 .info-panel-top {
   display: flex; align-items: center; justify-content: space-between;
   padding: 1.1em 1.2em; border-bottom: 1px solid var(--rule); font-weight: 600; font-size: 0.9em;
@@ -581,7 +608,21 @@ input[type=file] { display: none; }
 .info-meta-label { color: var(--muted); flex-shrink: 0; }
 .info-meta-value { text-align: right; overflow-wrap: anywhere; }
 
-/* ------------------------------------------------------------ drop overlay */
+.info-hl-empty { color: var(--muted); font-size: 0.83em; padding: 1.2em; text-align: center; }
+.info-hl-item { border: 1px solid var(--rule); border-radius: 8px; padding: 0.7em; margin-bottom: 0.8em; }
+.info-hl-quote {
+  border-left: 3px solid var(--hl-color, #ffeb3b);
+  padding-left: 0.6em; font-size: 0.85em; line-height: 1.45; margin-bottom: 0.5em;
+  color: var(--fg);
+  overflow-x: auto; max-width: 100%;
+}
+.info-hl-quote math { font-size: 1em; }
+.info-hl-note {
+  width: 100%; border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--bg); color: var(--fg); font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-size: 0.82em; padding: 0.5em; resize: vertical; min-height: 2.6em;
+}
+.info-hl-note[readonly] { background: transparent; border-color: transparent; padding: 0; resize: none; }/* ------------------------------------------------------------ drop overlay */
 .drop-overlay {
   position: fixed; inset: 0; background: rgba(26, 86, 219, 0.08);
   border: 3px dashed var(--accent); z-index: 999;
@@ -616,7 +657,7 @@ input[type=file] { display: none; }
 .confirm-card p { color: var(--muted); font-size: 0.86em; line-height: 1.5; margin: 0 0 1.4em; overflow-wrap: anywhere; }
 .confirm-card-actions { display: flex; justify-content: flex-end; gap: 0.6em; }
 .confirm-card-actions button {
-  border: none; border-radius: 8px; padding: 0.55em 1.1em; font-size: 0.85em; font-weight: 600; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; gap: 0.4em; border: none; border-radius: 8px; padding: 0.55em 1.1em; font-size: 0.85em; font-weight: 600; cursor: pointer;
   font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
   transition: opacity 0.15s ease;
 }
@@ -708,8 +749,16 @@ input[type=file] { display: none; }
 <div class="app-shell">
   <aside class="sidebar">
     <div class="sidebar-top">
-      <span class="brand">Andrew&rsquo;s Paper Library</span>
-      <button type="button" class="icon-btn sidebar-add-btn" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source or saved HTML page)">+</button>
+      <span class="brand">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>
+        Andrew&rsquo;s Paper Library
+      </span>
+      <button type="button" class="icon-btn sidebar-add-btn" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source or saved HTML page)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19"></line>
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+      </button>
     </div>
     <nav class="sidebar-nav">
       <button type="button" class="nav-item" id="navHome">Home</button>
@@ -778,7 +827,7 @@ input[type=file] { display: none; }
 
   <aside class="info-panel" id="infoPanel" hidden>
     <div class="info-panel-top">
-      <span>Info</span>
+      <span>Notes & Info</span>
       <button type="button" class="icon-btn" id="infoCloseBtn" aria-label="Close info panel">&times;</button>
     </div>
     <div class="info-panel-body" id="infoPanelBody"></div>
@@ -840,6 +889,11 @@ input[type=file] { display: none; }
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
     '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>' +
     '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>';
+  var HOME_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>';
+  var SEARCH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
+  var PREFS_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+  var TAG_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>';
+  var X_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
   var STATUS_ACTIONS = [
     { status: "inbox", icon: INBOX_ICON, label: "Move to Inbox" },
     { status: "later", icon: LATER_ICON, label: "Move to Later" },
@@ -972,7 +1026,7 @@ input[type=file] { display: none; }
       var item = document.createElement("button");
       item.type = "button";
       item.className = "nav-tag-item" + (activeTags.indexOf(t) !== -1 ? " active" : "");
-      item.textContent = t;
+      item.innerHTML = TAG_ICON + "<span>" + t + "</span>";
       item.title = t;
       item.addEventListener("click", function () {
         var idx = activeTags.indexOf(t);
@@ -1400,6 +1454,46 @@ input[type=file] { display: none; }
     tagsLabel.textContent = "Tags";
     body.appendChild(tagsLabel);
     body.appendChild(buildTagsEditor(p));
+
+    var hlLabel = document.createElement("div");
+    hlLabel.className = "info-section-label";
+    hlLabel.style.marginTop = "1.5em";
+    hlLabel.textContent = "Highlights";
+    body.appendChild(hlLabel);
+
+    var hlKey = "paper_reader_highlights::" + encodeURIComponent(p.title || "");
+    var highlights = [];
+    try { highlights = JSON.parse(localStorage.getItem(hlKey) || "[]"); } catch (e) {}
+
+    if (!highlights.length) {
+      var empty = document.createElement("div");
+      empty.className = "info-hl-empty";
+      empty.textContent = "No highlights for this paper.";
+      body.appendChild(empty);
+    } else {
+      var HL_COLORS = { yellow: "#ffeb3b", green: "#8bc34a", blue: "#03a9f4", purple: "#9c27b0", pink: "#e91e63" };
+      highlights.forEach(function (h) {
+        var item = document.createElement("div");
+        item.className = "info-hl-item";
+
+        var quote = document.createElement("div");
+        quote.className = "info-hl-quote";
+        quote.style.setProperty("--hl-color", HL_COLORS[h.color] || HL_COLORS.yellow);
+        if (h.html) quote.innerHTML = h.html;
+        else quote.textContent = h.text || "";
+        item.appendChild(quote);
+
+        if (h.note) {
+          var note = document.createElement("textarea");
+          note.className = "info-hl-note";
+          note.readOnly = true;
+          note.value = h.note;
+          item.appendChild(note);
+        }
+
+        body.appendChild(item);
+      });
+    }
   }
 
   function render(filter) {
@@ -1420,19 +1514,25 @@ input[type=file] { display: none; }
     filtered.sort(SORT_COMPARATORS[sortBy] || SORT_COMPARATORS.added);
     if (!filtered.length) {
       var emptyMsg;
-      if (!papers.length) emptyMsg = "No papers yet \\u2014 drop a LaTeX source or saved HTML paper page anywhere on this page to get started.";
+      if (!papers.length) emptyMsg = "No papers yet \u2014 drop a LaTeX source or saved HTML paper page anywhere on this page to get started.";
       else if (q || activeTags.length) emptyMsg = "No matching papers.";
       else emptyMsg = TAB_EMPTY_MESSAGES[currentTab] || "Nothing here yet.";
       list.innerHTML = '<div class="empty-state">' + emptyMsg + "</div>";
+      closeInfoPanel();
       return;
     }
+    
+    if (!selectedPaper || !filtered.some(function (p) { return p.id === selectedPaper.id; })) {
+      openInfoPanel(filtered[0]);
+    }
+
     list.innerHTML = "";
     openMoreWrap = null;
     filtered.forEach(function (p) {
       var card = document.createElement("div");
       card.className = "paper-card" + (selectedPaper && selectedPaper.id === p.id ? " selected" : "");
       card.dataset.paperId = p.id;
-      card.addEventListener("mouseenter", function () { hoveredPaperId = p.id; });
+      card.addEventListener("mouseenter", function () { hoveredPaperId = p.id; openInfoPanel(p); });
       card.addEventListener("mouseleave", function () { if (hoveredPaperId === p.id) hoveredPaperId = null; });
 
       var thumb = document.createElement("div");
@@ -1521,6 +1621,21 @@ input[type=file] { display: none; }
       actions.appendChild(deleteBtn);
 
       card.appendChild(actions);
+
+      var pctStr = localStorage.getItem("paper_reader_pct::" + encodeURIComponent(p.title || ""));
+      if (pctStr) {
+        var pct = parseFloat(pctStr);
+        if (pct > 0 && pct <= 1) {
+          var progTrack = document.createElement("div");
+          progTrack.className = "card-progress-track";
+          var progFill = document.createElement("div");
+          progFill.className = "card-progress-fill";
+          progFill.style.width = (pct * 100) + "%";
+          progTrack.appendChild(progFill);
+          card.appendChild(progTrack);
+        }
+      }
+
       list.appendChild(card);
     });
   }
@@ -1875,6 +1990,27 @@ input[type=file] { display: none; }
     var tag = t && t.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
 
+    if (e.key === "[") {
+      e.preventDefault();
+      var c = document.documentElement.classList.toggle("library-sidebar-collapsed");
+      saveSettings({ librarySidebarHidden: c });
+      return;
+    }
+    if (e.key === "]") {
+      e.preventDefault();
+      var c = document.documentElement.classList.toggle("library-info-collapsed");
+      saveSettings({ libraryInfoPanelHidden: c });
+      var ip = document.getElementById("infoPanel");
+      if (!c && ip.hidden) {
+        var targetId = selectedPaper ? selectedPaper.id : hoveredPaperId;
+        if (targetId) {
+          var p = papers.filter(function (x) { return x.id === targetId; })[0];
+          if (p) openInfoPanel(p);
+        }
+      }
+      return;
+    }
+
     if (e.key === "/") {
       e.preventDefault();
       searchOpen = true;
@@ -1909,6 +2045,24 @@ input[type=file] { display: none; }
 
   initTheme();
   initPullToRefresh();
+  
+  // Inject icons into static elements
+  document.getElementById("navHome").innerHTML = HOME_ICON + "<span>Home</span>";
+  document.getElementById("navSearchBtn").innerHTML = SEARCH_ICON + "<span>Search</span>";
+  document.getElementById("navPrefsBtn").innerHTML = PREFS_ICON + '<span>Preferences</span> <span class="nav-item-sub" id="prefsThemeLabel">Auto</span>';
+  
+  var tabs = document.querySelectorAll(".tab-btn");
+  if (tabs.length >= 4) {
+    tabs[0].innerHTML = INBOX_ICON + "<span>Inbox</span>";
+    tabs[1].innerHTML = LATER_ICON + "<span>Later</span>";
+    tabs[2].innerHTML = ARCHIVE_ICON + "<span>Archive</span>";
+    tabs[3].innerHTML = TRASH_ICON + "<span>Trash</span>";
+  }
+  
+  document.getElementById("infoCloseBtn").innerHTML = X_ICON;
+  document.getElementById("confirmCancelBtn").innerHTML = X_ICON + "<span>Cancel</span>";
+  document.getElementById("confirmDeleteBtn").innerHTML = TRASH_ICON + "<span>Delete</span>";
+
   loadPapers();
 })();
 </script>
@@ -1919,6 +2073,7 @@ input[type=file] { display: none; }
 ABOUT_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
 <script>
 (function () {
   try {
@@ -1936,10 +2091,21 @@ ABOUT_PAGE_HTML = """<!doctype html>
   --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; }
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; }
 }
 :root[data-theme="light"] { --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; }
-:root[data-theme="dark"] { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; }
+:root[data-theme="dark"] { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; }
+
+:root[data-theme="dark"] [style*="color: #000"],
+:root[data-theme="dark"] [style*="color:#000"],
+:root[data-theme="dark"] [style*="color: black"],
+:root[data-theme="dark"] [style*="color:black"],
+:root:not([data-theme="light"]) [style*="color: #000"],
+:root:not([data-theme="light"]) [style*="color:#000"],
+:root:not([data-theme="light"]) [style*="color: black"],
+:root:not([data-theme="light"]) [style*="color:black"] {
+  color: inherit !important;
+}
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
@@ -1969,6 +2135,7 @@ p a { color: var(--accent); }
   <h1>About</h1>
   <p>readwise (Reader) is one of my favorite products of all time. unfortunately they never added latex support so I could not read papers using the default. i vibe coded this out so that i can do that now.</p>
   <p>given the fact that this is vibe coded and that i am prone to dumbassery, please treat this as a prototype and don't do anything extremely stupid. if you like this idea, let me know and i might flesh it out even more! you are free to self host if you find this valuable for your workflow. all the code is on <a href="https://github.com/andrewluoooo/paper-reader">github</a>.</p>
+  <p>accessibility is also a huge issue with pdf research papers, making them difficult to read on various devices or with assistive technologies. this project addresses this by converting papers into a clean, responsive html format.</p>
 </div>
 </body>
 </html>
@@ -1977,6 +2144,7 @@ p a { color: var(--accent); }
 PIPELINE_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
 <script>
 (function () {
   try {
@@ -1995,10 +2163,21 @@ PIPELINE_PAGE_HTML = """<!doctype html>
   --card-bg: #fbfaf8; --error: #b3261e; --ok: #1a7d3a;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --ok: #5fd88a; }
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; --ok: #5fd88a; }
 }
 :root[data-theme="light"] { --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; --error: #b3261e; --ok: #1a7d3a; }
-:root[data-theme="dark"] { --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --rule: #33322d; --accent: #7fa7ff; --card-bg: #1b1a18; --error: #ff6b60; --ok: #5fd88a; }
+:root[data-theme="dark"] { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; --ok: #5fd88a; }
+
+:root[data-theme="dark"] [style*="color: #000"],
+:root[data-theme="dark"] [style*="color:#000"],
+:root[data-theme="dark"] [style*="color: black"],
+:root[data-theme="dark"] [style*="color:black"],
+:root:not([data-theme="light"]) [style*="color: #000"],
+:root:not([data-theme="light"]) [style*="color:#000"],
+:root:not([data-theme="light"]) [style*="color: black"],
+:root:not([data-theme="light"]) [style*="color:black"] {
+  color: inherit !important;
+}
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);

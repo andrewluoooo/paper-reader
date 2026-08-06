@@ -97,17 +97,17 @@ CSS = """
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #161513;
+    --bg: #1e1e1e;
     --fg: #ece9e2;
     --muted: #a9a49a;
     --link: #7fa7ff;
-    --rule: #33322d;
-    --table-border: #3a3934;
-    --table-header-bg: #232220;
-    --table-row-hover: #1c1b19;
-    --sidebar-bg: #1b1a18;
-    --control-bg: #201f1d;
-    --control-hover-bg: #2a2926;
+    --rule: #444444;
+    --table-border: #444444;
+    --table-header-bg: #2d2d2d;
+    --table-row-hover: #2a2a2a;
+    --sidebar-bg: #222222;
+    --control-bg: #2d2d2d;
+    --control-hover-bg: #383838;
     --highlight-yellow: #6b5c17;
     --highlight-green: #1f5c37;
     --highlight-blue: #1f4a6b;
@@ -127,12 +127,24 @@ CSS = """
   --highlight-yellow-line: #e0ab0e; --highlight-green-line: #2fa056; --highlight-blue-line: #2a7de1; --highlight-pink-line: #d84c96;
 }
 :root[data-theme="dark"] {
-  --bg: #161513; --fg: #ece9e2; --muted: #a9a49a; --link: #7fa7ff; --rule: #33322d;
-  --table-border: #3a3934; --table-header-bg: #232220; --table-row-hover: #1c1b19;
-  --sidebar-bg: #1b1a18; --control-bg: #201f1d; --control-hover-bg: #2a2926;
+  --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --link: #7fa7ff; --rule: #444444;
+  --table-border: #444444; --table-header-bg: #2d2d2d; --table-row-hover: #2a2a2a;
+  --sidebar-bg: #222222; --control-bg: #2d2d2d; --control-hover-bg: #383838;
   --highlight-yellow: #6b5c17; --highlight-green: #1f5c37; --highlight-blue: #1f4a6b; --highlight-pink: #6b1f45;
   --highlight-yellow-line: #e0ab0e; --highlight-green-line: #3ecb7a; --highlight-blue-line: #5b9dea; --highlight-pink-line: #ea6bb3;
 }
+
+:root[data-theme="dark"] [style*="color: #000"],
+:root[data-theme="dark"] [style*="color:#000"],
+:root[data-theme="dark"] [style*="color: black"],
+:root[data-theme="dark"] [style*="color:black"],
+:root:not([data-theme="light"]) [style*="color: #000"],
+:root:not([data-theme="light"]) [style*="color:#000"],
+:root:not([data-theme="light"]) [style*="color: black"],
+:root:not([data-theme="light"]) [style*="color:black"] {
+  color: inherit !important;
+}
+
 * { box-sizing: border-box; }
 ::selection { background-color: var(--highlight-blue); }
 ::-moz-selection { background-color: var(--highlight-blue); }
@@ -2684,6 +2696,10 @@ READER_SCRIPT = """
       // nothing left below the fold to account for.
       var pct = scrollable > 0 ? Math.min(1, Math.max(0, window.scrollY / scrollable)) : 1;
       if (pctEl) pctEl.textContent = Math.round(pct * 100) + "%";
+      try {
+        var pkey = "paper_reader_pct::" + encodeURIComponent(document.title || location.pathname);
+        localStorage.setItem(pkey, String(pct));
+      } catch (e) {}
       if (timeEl) {
         if (!wordCount) {
           timeEl.textContent = "–";
