@@ -583,6 +583,7 @@ input[type=file] { display: none; }
 .paper-action-btn:hover { color: var(--fg); background: var(--rule); }
 .paper-action-btn:active { transform: scale(0.9); }
 .paper-action-btn.active { color: var(--accent); }
+.paper-action-btn.pin-btn.active { color: #10b981; fill: #10b981; }
 .paper-action-btn.danger-action:hover { color: var(--error); }
 .paper-action-btn svg { width: 16px; height: 16px; display: block; }
 .more-wrap { position: relative; }
@@ -963,7 +964,7 @@ input[type=file] { display: none; }
   var TAG_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>';
   var X_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
   
-  var PIN_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 16-5.5-5.5"></path><path d="M15.5 10.5 12 7l-5.5 5.5"></path><path d="m3 21 6-6"></path></svg>';
+  var PIN_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="17" x2="12" y2="22"></line><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 11.2V6a3 3 0 0 0-6 0v5.2a2 2 0 0 1-1.11 1.35l-1.78.9A2 2 0 0 0 5 15.24Z"></path></svg>';
   var CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
 
   var STATUS_ACTIONS = [
@@ -1764,7 +1765,7 @@ input[type=file] { display: none; }
       
       var pinBtn2 = document.createElement("button");
       pinBtn2.type = "button";
-      pinBtn2.className = "paper-action-btn" + (p.pinned ? " active" : "");
+      pinBtn2.className = "paper-action-btn pin-btn" + (p.pinned ? " active" : "");
       pinBtn2.setAttribute("aria-label", p.pinned ? "Unpin from sidebar" : "Pin to sidebar");
       pinBtn2.title = p.pinned ? "Unpin from sidebar" : "Pin to sidebar";
       pinBtn2.innerHTML = PIN_ICON;
