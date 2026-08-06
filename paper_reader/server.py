@@ -524,9 +524,11 @@ input[type=file] { display: none; }
 .paper-card.selected { border-color: var(--accent); }
 
 .card-progress-track {
-  position: absolute; left: -1px; bottom: -1px; right: -1px; height: 3px;
-  background: transparent; overflow: hidden; border-radius: 0 0 10px 10px; pointer-events: none;
-  transform: translateZ(0); /* fix safari border-radius overflow clipping */
+  position: absolute; left: 0; bottom: 0; right: 0; height: 3px;
+  background: transparent; pointer-events: none;
+  border-radius: 0 0 9px 9px;
+  clip-path: inset(0 0 0 0 round 0 0 9px 9px);
+  -webkit-clip-path: inset(0 0 0 0 round 0 0 9px 9px);
 }
 .card-progress-fill {
   height: 100%; background: var(--accent); opacity: 0.8;
