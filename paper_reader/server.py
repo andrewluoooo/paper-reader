@@ -962,6 +962,10 @@ input[type=file] { display: none; }
   var PREFS_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
   var TAG_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>';
   var X_ICON = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+  
+  var PIN_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 16-5.5-5.5"></path><path d="M15.5 10.5 12 7l-5.5 5.5"></path><path d="m3 21 6-6"></path></svg>';
+  var CHECK_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+
   var STATUS_ACTIONS = [
     { status: "inbox", icon: INBOX_ICON, label: "Move to Inbox" },
     { status: "later", icon: LATER_ICON, label: "Move to Later" },
@@ -1521,26 +1525,6 @@ input[type=file] { display: none; }
       deletePaperFromCard(p);
     });
 
-    var pinItem = document.createElement("button");
-    pinItem.type = "button";
-    pinItem.textContent = p.pinned ? "Unpin from sidebar" : "Pin to sidebar";
-    pinItem.addEventListener("click", function (e) {
-      e.preventDefault(); e.stopPropagation(); closeMoreMenu();
-      updatePaper(p, { pinned: !p.pinned });
-    });
-    
-    var completeItem = document.createElement("button");
-    completeItem.type = "button";
-    completeItem.textContent = p.completed ? "Mark as unread" : "Mark as complete";
-    completeItem.addEventListener("click", function (e) {
-      e.preventDefault(); e.stopPropagation(); closeMoreMenu();
-      updatePaper(p, { completed: !p.completed });
-    });
-    
-    menu.appendChild(infoItem);
-    menu.appendChild(pinItem);
-    menu.appendChild(completeItem);
-
     menu.appendChild(removeItem);
     wrap.appendChild(menu);
     openMoreWrap = wrap;
@@ -1765,6 +1749,31 @@ input[type=file] { display: none; }
       });
       moreWrap.appendChild(moreBtn);
       actions.appendChild(moreWrap);
+
+      var completeBtn = document.createElement("button");
+      completeBtn.type = "button";
+      completeBtn.className = "paper-action-btn" + (p.completed ? " active" : "");
+      completeBtn.setAttribute("aria-label", p.completed ? "Mark as unread" : "Mark as complete");
+      completeBtn.title = p.completed ? "Mark as unread" : "Mark as complete";
+      completeBtn.innerHTML = CHECK_ICON;
+      completeBtn.addEventListener("click", function(e) {
+        e.preventDefault(); e.stopPropagation();
+        updatePaper(p, { completed: !p.completed });
+      });
+      actions.appendChild(completeBtn);
+      
+      var pinBtn2 = document.createElement("button");
+      pinBtn2.type = "button";
+      pinBtn2.className = "paper-action-btn" + (p.pinned ? " active" : "");
+      pinBtn2.setAttribute("aria-label", p.pinned ? "Unpin from sidebar" : "Pin to sidebar");
+      pinBtn2.title = p.pinned ? "Unpin from sidebar" : "Pin to sidebar";
+      pinBtn2.innerHTML = PIN_ICON;
+      pinBtn2.addEventListener("click", function(e) {
+        e.preventDefault(); e.stopPropagation();
+        updatePaper(p, { pinned: !p.pinned });
+      });
+      actions.appendChild(pinBtn2);
+
 
       STATUS_ACTIONS.forEach(function (spec) {
         var btn = document.createElement("button");
