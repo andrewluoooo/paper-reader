@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 import tempfile
+import time
 
 from .html_convert import HtmlConvertError
 from .html_convert import convert as convert_html
@@ -44,11 +46,23 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--library",
         action="store_true",
-        help="Launch the local library web app instead (drag-and-drop papers, search, open the reader)",
+        help="Launch the local library web app (drag-and-drop papers, search, open the reader)",
     )
     parser.add_argument("--port", type=int, default=8765, help="Port for --library (default: 8765)")
     parser.add_argument(
         "--no-browser", action="store_true", help="With --library, don't auto-open a browser tab"
+    )
+    parser.add_argument(
+        "--foreground",
+        "--fg",
+        action="store_true",
+        help="With --library, run the server in the foreground instead of detaching to background",
+    )
+    parser.add_argument(
+        "--stop-library",
+        "--stop",
+        action="store_true",
+        help="Stop the background library server if it is running",
     )
     parser.add_argument(
         "--rebuild-library",
@@ -64,11 +78,89 @@ def main(argv=None) -> int:
         server.rebuild_library()
         return 0
 
+    if args.stop_library:
+        from . import server
+
+        if server.stop_server():
+            print("Stopped library server.")
+        else:
+            print("Library server is not running.")
+        return 0
+
     if args.library:
         from . import server
 
-        server.run(port=args.port, open_browser=not args.no_browser)
-        return 0
+        if args.foreground:
+            server.run(port=args.port, open_browser=not args.no_browser)
+            return 0
+
+        url = f"http://127.0.0.1:{args.port}/"
+        if server.is_server_running(port=args.port):
+            print(
+                f"Andrew's Paper Library is already running at {url}  (library stored in {server.LIBRARY_DIR})"
+            )
+            if not args.no_browser:
+                import webbrowser
+
+                webbrowser.open(url)
+            return 0
+
+        server.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = open(server.LOG_PATH, "a", encoding="utf-8")
+        cmd = [
+            sys.executable,
+            "-m",
+            "paper_reader",
+            "--library",
+            "--foreground",
+            "--port",
+            str(args.port),
+            "--no-browser",
+        ]
+
+        popen_kwargs = {}
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            popen_kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            )
+
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            close_fds=True,
+            **popen_kwargs,
+        )
+
+        start_time = time.time()
+        started = False
+        while time.time() - start_time < 3.0:
+            if proc.poll() is not None:
+                break
+            if server.is_server_running(port=args.port):
+                started = True
+                break
+            time.sleep(0.1)
+
+        if started or (proc.poll() is None):
+            print(
+                f"Andrew's Paper Library running in background at {url} (PID {proc.pid})  "
+                f"(library stored in {server.LIBRARY_DIR})"
+            )
+            if not args.no_browser:
+                import webbrowser
+
+                webbrowser.open(url)
+            return 0
+        else:
+            print(
+                f"error: failed to start library server. See log file at {server.LOG_PATH}",
+                file=sys.stderr,
+            )
+            return 1
 
     if not args.source:
         parser.error("source is required unless --library is given")

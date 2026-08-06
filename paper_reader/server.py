@@ -19,6 +19,7 @@ import shutil
 import tempfile
 import threading
 import time
+import urllib.request
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +35,8 @@ from .restyle import restyle
 
 LIBRARY_DIR = Path.home() / ".paper_reader_library"
 INDEX_PATH = LIBRARY_DIR / "index.json"
+PID_PATH = LIBRARY_DIR / "server.pid"
+LOG_PATH = LIBRARY_DIR / "server.log"
 # Pre-restyle LaTeXML output (HTML + figure files) for each paper, kept
 # around permanently (not in a TemporaryDirectory) so that reader/CSS/JS
 # changes in restyle.py can be re-applied to already-uploaded papers
@@ -714,7 +717,7 @@ input[type=file] { display: none; }
       <div class="nav-tags" id="navTags"></div>
     </nav>
     <div class="sidebar-bottom">
-      <button type="button" class="nav-item" id="navSearchBtn">Search</button>
+      <button type="button" class="nav-item" id="navSearchBtn" title="Search papers (/)">Search</button>
       <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
       <div class="prefs-popover" id="prefsPopover" hidden>
         <div class="prefs-popover-label">Theme</div>
@@ -1800,6 +1803,7 @@ input[type=file] { display: none; }
       searchOpen = false;
       searchRow.hidden = true;
       searchBox.value = "";
+      searchBox.blur();
       render("");
     }
   });
@@ -1870,6 +1874,16 @@ input[type=file] { display: none; }
     var t = e.target;
     var tag = t && t.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+
+    if (e.key === "/") {
+      e.preventDefault();
+      searchOpen = true;
+      searchRow.hidden = false;
+      searchBox.focus();
+      searchBox.select();
+      return;
+    }
+
     if (!hoveredPaperId) return;
     var hp = papers.filter(function (x) { return x.id === hoveredPaperId; })[0];
     if (!hp) return;
@@ -2269,21 +2283,70 @@ class Handler(BaseHTTPRequestHandler):
         print("[library] " + (format % args))
 
 
-def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
-    rebuild_library()
-    server = ThreadingHTTPServer((host, port), Handler)
-    url = f"http://{host}:{port}/"
-    print(f"Andrew's Paper Library running at {url}  (library stored in {LIBRARY_DIR})")
-    print("Press Ctrl+C to stop.")
-    if open_browser:
-        threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+def is_server_running(host: str = "127.0.0.1", port: int = 8765) -> bool:
+    url = f"http://{host}:{port}/api/papers"
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
+        req = urllib.request.Request(url, headers={"User-Agent": "paper-reader-cli"})
+        with urllib.request.urlopen(req, timeout=1.0) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def stop_server() -> bool:
+    if not PID_PATH.exists():
+        return False
+    try:
+        pid = int(PID_PATH.read_text().strip())
+        os.kill(pid, 15)  # SIGTERM
+        if PID_PATH.exists():
+            try:
+                PID_PATH.unlink()
+            except OSError:
+                pass
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        if PID_PATH.exists():
+            try:
+                PID_PATH.unlink()
+            except OSError:
+                pass
+        return False
+
+
+def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        PID_PATH.write_text(str(os.getpid()))
+    except OSError:
         pass
+
+    try:
+        server = ThreadingHTTPServer((host, port), Handler)
+        url = f"http://{host}:{port}/"
+        print(f"Andrew's Paper Library running at {url}  (library stored in {LIBRARY_DIR})")
+        print("Press Ctrl+C to stop.")
+
+        # Rebuild library asynchronously so server startup is immediate
+        threading.Thread(target=rebuild_library, daemon=True).start()
+
+        if open_browser:
+            threading.Timer(0.4, lambda: webbrowser.open(url)).start()
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
     finally:
-        server.server_close()
+        if PID_PATH.exists():
+            try:
+                PID_PATH.unlink()
+            except OSError:
+                pass
+
 
 
 if __name__ == "__main__":
     run()
+

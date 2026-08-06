@@ -66,12 +66,13 @@ Source" download), a saved HTML paper page (`.html`/`.htm`), or a plain
 paper-reader --library
 ```
 
-Opens `http://127.0.0.1:8765` in your browser. Papers are stored in
-`~/.paper_reader_library`.
+Opens `http://127.0.0.1:8765` in your browser and runs in the background, returning control to your terminal immediately. If the server is already running, it opens a browser tab without spawning a second instance. Papers are stored in `~/.paper_reader_library`.
 
 ```bash
 paper-reader --library --port 9000     # use a different port
 paper-reader --library --no-browser    # don't auto-open a browser tab
+paper-reader --library --foreground    # run in foreground (hold terminal prompt)
+paper-reader --stop-library            # stop the background library server
 paper-reader --rebuild-library         # re-render every saved paper with the
                                         # current styling, then exit
 ```
