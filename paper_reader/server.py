@@ -1976,8 +1976,7 @@ input[type=file] { display: none; }
     var releaseTimer = null;
     var hideTimer = null;
     var refreshing = false;
-    var momentumBlock = false;
-    var momentumTimer = null;
+
 
     function reveal() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -2045,15 +2044,10 @@ input[type=file] { display: none; }
       var mainCol = document.querySelector(".main-col");
       var currentScrollY = mainCol ? mainCol.scrollTop : 0;
       
-      if (momentumTimer) clearTimeout(momentumTimer);
-      momentumTimer = setTimeout(function() { momentumBlock = false; }, 300);
-      
       if (currentScrollY > 0) {
-        momentumBlock = true;
         if (pullAmount) cancelPull();
         return;
       }
-      if (momentumBlock) return;
       
       if (e.deltaY < 0) {
         pullAmount += -e.deltaY;
