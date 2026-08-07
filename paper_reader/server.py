@@ -897,9 +897,9 @@ input[type=file] { display: none; }
       </div>
     </div>
 
-    <div class="search-row" id="searchRow" hidden>
-      <input type="text" id="searchBox" placeholder="Search papers by title or author...">
-      <button type="button" class="icon-btn" id="searchCancelBtn" aria-label="Cancel search" style="border: 1px solid var(--rule); border-radius: 6px; padding: 0 0.8em;">&times;</button>
+    <div class="search-row" id="searchRow" style="position: relative;" hidden>
+      <input type="text" id="searchBox" placeholder="Search papers by title or author..." style="padding-right: 32px;">
+      <button type="button" id="searchCancelBtn" aria-label="Cancel search" style="position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: transparent; border: none; font-size: 1.2em; color: var(--muted); cursor: pointer; padding: 0.2em 0.4em; display: flex; align-items: center; justify-content: center;">&times;</button>
     </div>
 
     <div class="status" id="status"></div>
