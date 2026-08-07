@@ -894,6 +894,7 @@ input[type=file] { display: none; }
 
     <div class="search-row" id="searchRow" hidden>
       <input type="text" id="searchBox" placeholder="Search papers by title or author...">
+      <button type="button" class="icon-btn" id="searchCancelBtn" aria-label="Cancel search" style="border: 1px solid var(--rule); border-radius: 6px; padding: 0 0.8em;">&times;</button>
     </div>
 
     <div class="status" id="status"></div>
@@ -2158,6 +2159,12 @@ input[type=file] { display: none; }
     searchRow.hidden = !searchOpen;
     if (searchOpen) searchBox.focus();
     else { searchBox.value = ""; render(""); }
+  });
+  document.getElementById("searchCancelBtn").addEventListener("click", function () {
+    searchOpen = false;
+    searchRow.hidden = true;
+    searchBox.value = "";
+    render("");
   });
 
   var sortSelect = document.getElementById("sortSelect");
