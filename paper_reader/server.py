@@ -1701,6 +1701,10 @@ input[type=file] { display: none; }
       card.addEventListener("dragstart", function(e) {
         e.dataTransfer.setData("application/x-paper-id", p.id);
         e.dataTransfer.effectAllowed = "move";
+        
+        var rect = card.getBoundingClientRect();
+        e.dataTransfer.setDragImage(card, e.clientX - rect.left, e.clientY - rect.top);
+        
         setTimeout(function() { card.classList.add("dragging"); }, 0);
       });
       card.addEventListener("dragend", function(e) {
@@ -1718,6 +1722,7 @@ input[type=file] { display: none; }
       var a = document.createElement("a");
       a.className = "paper-card-link";
       a.href = "/library/" + encodeURIComponent(p.id) + ".html";
+      a.draggable = false;
 
       
       var titleEl = document.createElement("div");
