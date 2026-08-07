@@ -1970,7 +1970,7 @@ input[type=file] { display: none; }
     var arrow = document.getElementById("pullRefreshArrow");
     var spinner = document.getElementById("pullRefreshSpinner");
     if (!indicator) return;
-    var PULL_THRESHOLD = 170;
+    var PULL_THRESHOLD = 300;
     var RELEASE_DEBOUNCE_MS = 200;
     var pullAmount = 0;
     var cooldownUntil = 0;
