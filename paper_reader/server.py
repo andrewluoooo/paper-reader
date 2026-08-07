@@ -420,6 +420,7 @@ html.library-sidebar-collapsed .sidebar {
 }
 .nav-tag-item:hover { background: var(--rule); color: var(--fg); }
 .nav-tag-item.active { background: var(--accent); color: #fff; }
+.nav-tag-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-bottom { margin-top: 0.8em; padding-top: 0.6em; border-top: 1px solid var(--rule); flex-shrink: 0; position: relative; }
 .sidebar-footer { padding: 0.6em 0.6em 0.1em; font-size: 0.78em; color: var(--muted); }
 .sidebar-footer a { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; }
