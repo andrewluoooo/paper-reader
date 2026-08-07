@@ -872,6 +872,7 @@ input[type=file] { display: none; }
       <div class="tabs-row" role="tablist">
         <button type="button" class="tab-btn" role="tab" data-status="inbox">Inbox</button>
         <button type="button" class="tab-btn" role="tab" data-status="later">Later</button>
+        <button type="button" class="tab-btn" role="tab" data-status="completed">Completed</button>
         <button type="button" class="tab-btn" role="tab" data-status="archive">Archive</button>
         <button type="button" class="tab-btn" role="tab" data-status="trash">Trash</button>
       </div>
@@ -1653,9 +1654,16 @@ input[type=file] { display: none; }
   function render(filter) {
     var list = document.getElementById("paperList");
     var q = (filter || "").trim().toLowerCase();
+
     var filtered = papers.filter(function (p) {
-      if ((p.status || "inbox") !== currentTab) return false;
+      if (currentTab === "completed") {
+        if (!p.completed || p.status === "trash") return false;
+      } else {
+        if ((p.status || "inbox") !== currentTab) return false;
+        if (p.completed && (currentTab === "inbox" || currentTab === "later")) return false;
+      }
       if (q) {
+
         var hay = (p.title + " " + (p.authors || []).join(" ") + " " + (p.venue || "")).toLowerCase();
         if (hay.indexOf(q) === -1) return false;
       }
