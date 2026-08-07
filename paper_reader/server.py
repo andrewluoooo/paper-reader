@@ -2347,6 +2347,34 @@ input[type=file] { display: none; }
       });
     });
   }
+
+  function initCollapsible(labelId, contentId, storageKey) {
+    var label = document.getElementById(labelId);
+    var content = document.getElementById(contentId);
+    if (!label || !content) return;
+    
+    var isCollapsed = localStorage.getItem(storageKey) === "true";
+    if (isCollapsed) {
+      label.classList.add("collapsed");
+      content.style.display = "none";
+    }
+    
+    label.addEventListener("click", function() {
+      isCollapsed = !isCollapsed;
+      localStorage.setItem(storageKey, isCollapsed);
+      if (isCollapsed) {
+        label.classList.add("collapsed");
+        content.style.display = "none";
+      } else {
+        label.classList.remove("collapsed");
+        content.style.display = "";
+      }
+    });
+  }
+  
+  initCollapsible("navPinnedLabel", "navPinned", "paper_reader_pinned_collapsed");
+  initCollapsible("navTagsLabel", "navTags", "paper_reader_tags_collapsed");
+
   setupDragDropZones();
 
   loadPapers();
