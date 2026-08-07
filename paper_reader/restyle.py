@@ -841,6 +841,54 @@ mark.user-highlight {
 }
 mark.user-highlight.flash { outline: 2px solid var(--link); outline-offset: 2px; }
 
+/* Author chips floating on the article next to each highlight */
+.reader-hl-labels {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 0;
+  pointer-events: none;
+  z-index: 18;
+}
+.reader-hl-inline-label {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  max-width: min(220px, 42vw);
+  padding: 0.18em 0.45em 0.18em 0.18em;
+  border-radius: 999px;
+  background: var(--control-bg);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--hl-line, var(--highlight-yellow-line));
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  font-family: var(--reader-font-sans);
+  font-size: 0.72em;
+  line-height: 1.2;
+  color: var(--fg);
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translateY(calc(-100% - 4px));
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s ease;
+}
+.reader-hl-inline-label.is-visible {
+  opacity: 1;
+  visibility: visible;
+}
+.reader-hl-inline-label .reader-hl-author-avatar {
+  width: 18px; height: 18px; font-size: 0.65em;
+}
+.reader-hl-inline-label-name {
+  overflow: hidden; text-overflow: ellipsis; font-weight: 600;
+}
+@media (max-width: 720px) {
+  .reader-hl-inline-label-name { max-width: 72px; }
+}
+
 /* ---- right sidebar: info / highlights & notes ------------------------ */
 .reader-sidebar-right {
   flex: 0 0 var(--sidebar-right-width);
@@ -929,6 +977,17 @@ html.sidebar-right-collapsed .reader-sidebar-right .reader-sidebar-resize { disp
 
 .reader-hl-empty { color: var(--muted); font-size: 0.83em; }
 .reader-hl-item { border: 1px solid var(--rule); border-radius: 8px; padding: 0.7em; margin-bottom: 0.8em; }
+.reader-hl-author {
+  display: flex; align-items: center; gap: 0.45em; margin-bottom: 0.55em;
+  font-size: 0.78em; color: var(--muted); font-family: var(--reader-font-sans);
+}
+.reader-hl-author-avatar {
+  width: 22px; height: 22px; border-radius: 50%; overflow: hidden; flex-shrink: 0;
+  background: var(--rule); color: var(--fg); font-size: 0.72em; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.reader-hl-author-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.reader-hl-author-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 600; }
 .reader-hl-quote {
   border-left: 3px solid var(--hl-color, var(--highlight-yellow));
   padding-left: 0.6em; font-size: 0.85em; line-height: 1.45; margin-bottom: 0.5em;
@@ -1139,6 +1198,12 @@ a.ltx_ref[href^="#bib."] { text-decoration-style: dotted; }
 }
 .reader-margin-comment:hover { border-color: var(--link); box-shadow: 0 4px 14px rgba(0,0,0,0.14); }
 .reader-margin-comment-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.4em; }
+.reader-margin-comment-author {
+  display: flex; align-items: center; gap: 0.35em; margin-bottom: 0.35em;
+  font-size: 0.72em; color: var(--muted); font-family: var(--reader-font-sans);
+}
+.reader-margin-comment-author .reader-hl-author-avatar { width: 18px; height: 18px; font-size: 0.65em; }
+.reader-margin-comment-author-name { font-weight: 600; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-margin-comment-quote {
   flex: 1;
   min-width: 0;
@@ -1308,6 +1373,184 @@ READER_SCRIPT = """
   }
   function saveHighlights(list) {
     try { localStorage.setItem(HIGHLIGHTS_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function currentAuthorProfile() {
+    var p = window.__paperReaderProfile || {};
+    var name = (typeof p.displayName === "string" ? p.displayName : "").trim();
+    return {
+      authorName: name || "You",
+      authorHasAvatar: !!p.hasAvatar
+    };
+  }
+  function highlightAuthorName(h) {
+    return (h && h.authorName ? String(h.authorName) : "").trim();
+  }
+  // A highlight belongs to the signed-in profile when authorName matches
+  // the current display name. Empty authorName is only treated as "mine"
+  // for the anonymous "You" profile (legacy unmarked highlights); a named
+  // account cannot delete unsigned highlights — safer "can't delete others".
+  function isOwnHighlight(h) {
+    if (!h) return false;
+    var mine = currentAuthorProfile().authorName;
+    var theirs = highlightAuthorName(h);
+    if (!theirs) return mine === "You";
+    return theirs === mine;
+  }
+  function refreshAuthorProfile() {
+    return fetch("/api/account", { credentials: "same-origin" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && typeof d === "object") window.__paperReaderProfile = d;
+        return window.__paperReaderProfile || null;
+      })
+      .catch(function () { return window.__paperReaderProfile || null; });
+  }
+  function appendAuthorBadge(parent, h, opts) {
+    opts = opts || {};
+    var name = (h && h.authorName ? String(h.authorName) : "").trim();
+    var hasAvatar = !!(h && h.authorHasAvatar);
+    if (!name && !hasAvatar) return null;
+    var row = document.createElement("div");
+    row.className = opts.className || "reader-hl-author";
+    var av = document.createElement("div");
+    av.className = "reader-hl-author-avatar";
+    av.setAttribute("aria-hidden", "true");
+    if (hasAvatar) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = "/api/account/avatar";
+      img.addEventListener("error", function () {
+        av.textContent = (name || "?").charAt(0).toUpperCase();
+      });
+      av.appendChild(img);
+    } else {
+      av.textContent = (name || "?").charAt(0).toUpperCase();
+    }
+    row.appendChild(av);
+    if (name) {
+      var nm = document.createElement("span");
+      nm.className = opts.nameClassName || "reader-hl-author-name";
+      nm.textContent = name;
+      row.appendChild(nm);
+    }
+    parent.appendChild(row);
+    return row;
+  }
+  function stampAuthorFields(h) {
+    var author = currentAuthorProfile();
+    h.authorName = author.authorName;
+    h.authorHasAvatar = author.authorHasAvatar;
+    return h;
+  }
+  function restampCurrentPaperHighlights() {
+    var author = currentAuthorProfile();
+    var list = loadHighlights();
+    if (!list.length) return list;
+    var changed = false;
+    list.forEach(function (h) {
+      if (!h || typeof h !== "object") return;
+      // Never rewrite another author's highlights — ownership depends on
+      // the stamped authorName surviving across sessions.
+      if (!isOwnHighlight(h)) return;
+      if (h.authorName !== author.authorName || !!h.authorHasAvatar !== author.authorHasAvatar) {
+        h.authorName = author.authorName;
+        h.authorHasAvatar = author.authorHasAvatar;
+        changed = true;
+      }
+    });
+    if (changed) saveHighlights(list);
+    return list;
+  }
+  function highlightAnchorRect(h) {
+    var entry = highlightRegistry[h.id];
+    if (!entry) return null;
+    if (entry.marks.length) return entry.marks[0].getBoundingClientRect();
+    if (entry.cssRanges.length) {
+      var rects = entry.cssRanges[0].getClientRects();
+      if (rects && rects.length) return rects[0];
+      return entry.cssRanges[0].getBoundingClientRect();
+    }
+    return null;
+  }
+  function authorLabelTargetId() {
+    return activeMarkId || hoverMarkId || null;
+  }
+  function updateHighlightAuthorLabels() {
+    var container = document.getElementById("hlAuthorLabels");
+    if (!container || !pageRoot) return;
+    var id = authorLabelTargetId();
+    if (!id) {
+      container.innerHTML = "";
+      return;
+    }
+    var existing = container.querySelector(".reader-hl-inline-label");
+    var h = findHighlight(id);
+    if (!h) {
+      container.innerHTML = "";
+      return;
+    }
+    var rect = highlightAnchorRect(h);
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+      container.innerHTML = "";
+      return;
+    }
+    var top = (rect.top + window.scrollY) + "px";
+    var left = (rect.left + window.scrollX) + "px";
+    if (existing && existing.dataset.highlightId === id) {
+      existing.style.top = top;
+      existing.style.left = left;
+      existing.classList.add("is-visible");
+      return;
+    }
+
+    var name = (h.authorName || "").trim();
+    if (!name && !h.authorHasAvatar) {
+      container.innerHTML = "";
+      return;
+    }
+    container.innerHTML = "";
+    var chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "reader-hl-inline-label is-visible";
+    chip.dataset.highlightId = h.id;
+    chip.style.top = top;
+    chip.style.left = left;
+    chip.style.setProperty("--hl-line", HL_LINE_COLORS[h.color] || HL_LINE_COLORS.yellow);
+    chip.title = (name || "Highlight") + " — click to jump";
+    chip.setAttribute("aria-label", "Highlight by " + (name || "you"));
+
+    var av = document.createElement("div");
+    av.className = "reader-hl-author-avatar";
+    av.setAttribute("aria-hidden", "true");
+    if (h.authorHasAvatar) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = "/api/account/avatar";
+      img.addEventListener("error", function () {
+        av.textContent = (name || "?").charAt(0).toUpperCase();
+      });
+      av.appendChild(img);
+    } else {
+      av.textContent = (name || "?").charAt(0).toUpperCase();
+    }
+    chip.appendChild(av);
+    if (name) {
+      var nm = document.createElement("span");
+      nm.className = "reader-hl-inline-label-name";
+      nm.textContent = name;
+      chip.appendChild(nm);
+    }
+    chip.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      jumpToHighlight(h.id);
+    });
+    // Keep the chip visible while the pointer is on it (leaving the
+    // highlight text would otherwise clear hoverMarkId and hide it).
+    chip.addEventListener("pointerenter", function () {
+      hoverMarkId = h.id;
+    });
+    container.appendChild(chip);
   }
 
   /* ---------------------------------------------------------------- theme */
@@ -1502,6 +1745,7 @@ READER_SCRIPT = """
       var next = Math.max(min, Math.min(max, startWidth + delta));
       document.documentElement.style.setProperty(cssVar, next + "px");
       updateMarginComments(); // the column shifts as the sidebar is dragged, not just resized
+      updateHighlightAuthorLabels();
     });
     document.addEventListener("mouseup", function () {
       if (!dragging) return;
@@ -1512,6 +1756,7 @@ READER_SCRIPT = """
       var patch = {};
       patch[settingsKey] = getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
       saveSettings(patch);
+      updateHighlightAuthorLabels();
     });
     handle.addEventListener("dblclick", function () {
       document.documentElement.style.setProperty(cssVar, defaultPx + "px");
@@ -1519,6 +1764,7 @@ READER_SCRIPT = """
       patch[settingsKey] = defaultPx + "px";
       saveSettings(patch);
       updateMarginComments();
+      updateHighlightAuthorLabels();
     });
   }
 
@@ -1538,6 +1784,7 @@ READER_SCRIPT = """
       document.documentElement.classList.toggle("sidebar-left-collapsed", v);
       saveSettings({ sidebarLeftCollapsed: v });
       updateMarginComments();
+      updateHighlightAuthorLabels();
     }
     function toggleSidebar() {
       if (window.innerWidth <= 900) { sidebar.classList.contains("open") ? close() : open(); }
@@ -1786,12 +2033,18 @@ READER_SCRIPT = """
     return null;
   }
   function removeHighlightById(id) {
+    var h = findHighlight(id);
+    if (h && !isOwnHighlight(h)) return false;
     removeHighlightVisual(id);
-    saveHighlights(loadHighlights().filter(function (h) { return h.id !== id; }));
+    saveHighlights(loadHighlights().filter(function (x) { return x.id !== id; }));
+    if (activeMarkId === id) activeMarkId = null;
     renderHighlightsList();
+    updateHighlightAuthorLabels();
+    return true;
   }
   function restoreHighlights() {
     ensureColorHighlightBuckets();
+    restampCurrentPaperHighlights();
     loadHighlights().forEach(function (h) {
       try {
         var startNode = nodeFromPath(h.startPath, pageRoot);
@@ -1862,6 +2115,8 @@ READER_SCRIPT = """
       var item = document.createElement("div");
       item.className = "reader-hl-item";
 
+      appendAuthorBadge(item, h);
+
       var quote = document.createElement("div");
       quote.className = "reader-hl-quote";
       quote.style.setProperty("--hl-color", HL_COLORS[h.color] || HL_COLORS.yellow);
@@ -1900,12 +2155,14 @@ READER_SCRIPT = """
         copyToClipboard(highlightMarkdown(h));
         flashButtonText(copyBtn, "Copied!");
       });
-      var delBtn = document.createElement("button");
-      delBtn.textContent = "Delete";
-      delBtn.addEventListener("click", function () { removeHighlightById(h.id); });
       actions.appendChild(jumpBtn);
       actions.appendChild(copyBtn);
-      actions.appendChild(delBtn);
+      if (isOwnHighlight(h)) {
+        var delBtn = document.createElement("button");
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", function () { removeHighlightById(h.id); });
+        actions.appendChild(delBtn);
+      }
 
       item.appendChild(quote);
       item.appendChild(note);
@@ -1913,6 +2170,7 @@ READER_SCRIPT = """
       container.appendChild(item);
     });
     updateMarginComments();
+    updateHighlightAuthorLabels();
   }
   // Notion-style margin comments: any highlight with a note gets a small
   // card floating in the gutter between the reading column and the right
@@ -1956,6 +2214,11 @@ READER_SCRIPT = """
       card.style.left = gutterLeft + "px";
       card.style.setProperty("--hl-color", HL_LINE_COLORS[h.color] || HL_LINE_COLORS.yellow);
 
+      appendAuthorBadge(card, h, {
+        className: "reader-margin-comment-author",
+        nameClassName: "reader-margin-comment-author-name"
+      });
+
       var header = document.createElement("div");
       header.className = "reader-margin-comment-header";
       var quote = document.createElement("div");
@@ -1975,7 +2238,7 @@ READER_SCRIPT = """
       delBtn.setAttribute("aria-label", "Delete note");
       delBtn.title = "Delete note";
       actions.appendChild(editBtn);
-      actions.appendChild(delBtn);
+      if (isOwnHighlight(h)) actions.appendChild(delBtn);
       header.appendChild(quote);
       header.appendChild(actions);
 
@@ -1989,6 +2252,7 @@ READER_SCRIPT = """
       });
       delBtn.addEventListener("click", function (e) {
         e.stopPropagation();
+        if (!isOwnHighlight(h)) return;
         var l = loadHighlights();
         l.forEach(function (x) { if (x.id === h.id) x.note = ""; });
         saveHighlights(l);
@@ -2095,6 +2359,10 @@ READER_SCRIPT = """
   function highlightMarkdown(h) {
     var text = (h.text || "").replace(/\\s+/g, " ").trim();
     var lines = ["> " + text];
+    if (h.authorName && String(h.authorName).trim()) {
+      lines.push("");
+      lines.push("_Highlighted by " + String(h.authorName).trim() + "_");
+    }
     if (h.note && h.note.trim()) {
       lines.push("");
       lines.push("**Note:** " + h.note.trim());
@@ -2161,6 +2429,7 @@ READER_SCRIPT = """
       document.documentElement.classList.toggle("sidebar-right-collapsed", v);
       saveSettings({ sidebarRightCollapsed: v });
       updateMarginComments();
+      updateHighlightAuthorLabels();
     }
     window.__readerOpenRightSidebar = function () {
       if (window.innerWidth <= 1150) open(); else collapse(false);
@@ -2199,19 +2468,39 @@ READER_SCRIPT = """
   var selToolbar, activeMarkId = null;
   var hlHandleStart, hlHandleEnd, hlDragState = null, hlDragRAF = null;
   var hoverMarkId = null;
-  function hideSelToolbar() { if (selToolbar) selToolbar.hidden = true; activeMarkId = null; hoverMarkId = null; hideHandles(); }
+  function hideSelToolbar() {
+    if (selToolbar) selToolbar.hidden = true;
+    activeMarkId = null;
+    hoverMarkId = null;
+    hideHandles();
+    updateHighlightAuthorLabels();
+  }
   // Shows the drag handles for whatever highlight is under the cursor, so
   // they're discoverable without first clicking to open the manage
   // toolbar. Doesn't touch activeMarkId -- an actively-managed highlight
   // (opened by a click) keeps its handles regardless of where the mouse
   // wanders until the toolbar itself is closed.
   function updateHoverHandles(x, y) {
-    if (activeMarkId || hlDragState) return;
+    if (hlDragState) return;
+    if (activeMarkId) {
+      updateHighlightAuthorLabels();
+      return;
+    }
+    var under = document.elementFromPoint(x, y);
+    if (under && under.closest && under.closest(".reader-hl-inline-label")) {
+      // Pointer is on the author chip — keep the current hover label.
+      updateHighlightAuthorLabels();
+      return;
+    }
     var hlId = findHighlightIdAtPoint(x, y);
-    if (hlId === hoverMarkId) return;
+    if (hlId === hoverMarkId) {
+      updateHighlightAuthorLabels();
+      return;
+    }
     hoverMarkId = hlId;
     if (hlId) positionHandles(hlId);
     else hideHandles();
+    updateHighlightAuthorLabels();
   }
   function positionToolbar(rect) {
     var top = Math.max(8, rect.top - 58);
@@ -2231,7 +2520,17 @@ READER_SCRIPT = """
     var noteBtn = selToolbar.querySelector(".reader-note-btn");
     var removeBtn = selToolbar.querySelector(".reader-remove");
     if (noteBtn) noteBtn.style.display = manageDisplay;
-    if (removeBtn) removeBtn.style.display = manageDisplay;
+    if (removeBtn) {
+      var canDelete = false;
+      if (hasMark && activeMarkId) {
+        var activeHl = findHighlight(activeMarkId);
+        canDelete = !!(activeHl && isOwnHighlight(activeHl));
+      }
+      removeBtn.style.display = canDelete ? manageDisplay : "none";
+      removeBtn.disabled = !canDelete;
+      removeBtn.setAttribute("aria-disabled", canDelete ? "false" : "true");
+      removeBtn.title = canDelete ? "Remove highlight" : "You can only remove your own highlights";
+    }
   }
 
   /* ---------------------------------------- highlight boundary drag handles */
@@ -2407,7 +2706,10 @@ READER_SCRIPT = """
     // itself catches all of these in one place instead of hooking every
     // individual control that can trigger a reflow.
     if (window.ResizeObserver) {
-      new ResizeObserver(function () { updateMarginComments(); }).observe(pageRoot);
+      new ResizeObserver(function () {
+        updateMarginComments();
+        updateHighlightAuthorLabels();
+      }).observe(pageRoot);
     }
 
     [hlHandleStart, hlHandleEnd].forEach(function (handle, i) {
@@ -2444,7 +2746,10 @@ READER_SCRIPT = """
     // at --reader-max-width and just re-centers in the wider/narrower
     // flex space), so the ResizeObserver on it alone won't catch this --
     // needs its own listener.
-    window.addEventListener("resize", updateMarginComments);
+    window.addEventListener("resize", function () {
+      updateMarginComments();
+      updateHighlightAuthorLabels();
+    });
 
     if (!cssHighlightsSupported) {
       console.warn("Highlighting needs the CSS Custom Highlight API (recent Chrome/Edge/Safari; Firefox 140+), which this browser doesn't support -- selection colors won't do anything here.");
@@ -2473,11 +2778,13 @@ READER_SCRIPT = """
         var preview = buildHighlightPreview(segments);
         applySegments(segments, color, id);
         sel.removeAllRanges();
+        var author = currentAuthorProfile();
         var list2 = loadHighlights();
-        list2.push({
+        list2.push(stampAuthorFields({
           id: id, color: color, note: "", text: preview.text, html: preview.html,
-          startPath: startPath, startOffset: startOffset, endPath: endPath, endOffset: endOffset
-        });
+          startPath: startPath, startOffset: startOffset, endPath: endPath, endOffset: endOffset,
+          authorName: author.authorName, authorHasAvatar: author.authorHasAvatar
+        }));
         saveHighlights(list2);
         renderHighlightsList();
         // Keep the toolbar open on the new highlight so a note/remove is
@@ -2487,6 +2794,7 @@ READER_SCRIPT = """
         setToolbarMode(true);
         positionToolbar(toolbarRect);
         positionHandles(id);
+        updateHighlightAuthorLabels();
       });
     });
     var noteBtn = selToolbar.querySelector(".reader-note-btn");
@@ -2498,7 +2806,10 @@ READER_SCRIPT = """
     var removeBtn = selToolbar.querySelector(".reader-remove");
     if (removeBtn) removeBtn.addEventListener("click", function (e) {
       e.stopPropagation();
-      if (activeMarkId) removeHighlightById(activeMarkId);
+      if (!activeMarkId) return;
+      var hl = findHighlight(activeMarkId);
+      if (hl && !isOwnHighlight(hl)) return;
+      removeHighlightById(activeMarkId);
       hideSelToolbar();
     });
 
@@ -2524,7 +2835,7 @@ READER_SCRIPT = """
       }, 0);
     });
     document.addEventListener("click", function (e) {
-      if (e.target.closest && e.target.closest(".reader-selection-toolbar, .reader-hl-handle")) return;
+      if (e.target.closest && e.target.closest(".reader-selection-toolbar, .reader-hl-handle, .reader-hl-inline-label")) return;
       var hlId = findHighlightIdAtPoint(e.clientX, e.clientY);
       if (hlId) {
         var entry = highlightRegistry[hlId];
@@ -2536,6 +2847,7 @@ READER_SCRIPT = """
         setToolbarMode(true);
         positionToolbar(rect);
         positionHandles(hlId);
+        updateHighlightAuthorLabels();
         e.stopPropagation();
       } else {
         hideSelToolbar();
@@ -3133,6 +3445,11 @@ READER_SCRIPT = """
     initSidebar();
     initRightSidebar();
     initHighlighting();
+    refreshAuthorProfile().then(function () {
+      restampCurrentPaperHighlights();
+      renderHighlightsList();
+      updateHighlightAuthorLabels();
+    });
     initRefPreviews();
     initProgressBar();
     initReadingProgress();
@@ -3758,6 +4075,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 <div class="reader-sidebar-backdrop" id="sidebarBackdrop"></div>
 <div class="reader-sidebar-backdrop-right" id="sidebarRightBackdrop"></div>
 <div class="reader-margin-comments" id="marginComments"></div>
+<div class="reader-hl-labels" id="hlAuthorLabels"></div>
 <div class="reader-shell">
 <aside class="reader-sidebar" id="readerSidebar">
   <div class="reader-sidebar-title">

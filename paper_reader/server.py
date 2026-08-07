@@ -12,18 +12,23 @@ files." Runs entirely on localhost.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import html
 import json
 import os
+import secrets
 import shutil
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 from .epub_convert import EpubConvertError
@@ -34,16 +39,19 @@ from .latex_convert import LatexConvertError, convert as convert_latex
 from .pdf_convert import PdfConvertError
 from .pdf_convert import convert as convert_pdf
 from .restyle import restyle
+from .vault import (
+    ACCOUNTS_PATH,
+    LIBRARY_DIR,
+    Vault,
+    derive_fernet,
+    ensure_empty_vault,
+    migrate_legacy_into_vault,
+)
 
-LIBRARY_DIR = Path.home() / ".paper_reader_library"
-INDEX_PATH = LIBRARY_DIR / "index.json"
 PID_PATH = LIBRARY_DIR / "server.pid"
 LOG_PATH = LIBRARY_DIR / "server.log"
-# Pre-restyle LaTeXML output (HTML + figure files) for each paper, kept
-# around permanently (not in a TemporaryDirectory) so that reader/CSS/JS
-# changes in restyle.py can be re-applied to already-uploaded papers
-# without re-running the slow LaTeX->HTML conversion.
-RAW_DIR = LIBRARY_DIR / "raw"
+# Legacy plaintext paths (pre-vault). Kept for one-shot migration only.
+LEGACY_AUTH_PATH = LIBRARY_DIR / "auth.json"
 
 ALLOWED_UPLOAD_SUFFIXES = (
     ".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", ".htm", ".pdf", ".epub",
@@ -54,6 +62,376 @@ EPUB_SOURCE_SUFFIXES = (".epub",)
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
 PAPER_STATUSES = ("inbox", "later", "archive", "trash")
 
+# Auth is on by default. Each secret key owns an encrypted vault under
+# ~/.paper_reader_library/vaults/<id>/. Only key/enc salts + hashes live in
+# accounts.json. Set PAPER_READER_DISABLE_AUTH=1 to skip login (still uses a
+# local encrypted vault unlocked automatically).
+SESSION_COOKIE = "paper_reader_session"
+SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days
+_PBKDF2_ITERATIONS = 200_000
+_SECRET_KEY_BYTES = 32  # 256 bits of entropy
+_AUTH_LOCK = threading.Lock()
+_SESSION_LOCK = threading.Lock()
+# token -> {account_id, vault, exp}; DEK lives only here (process memory)
+_SESSIONS: dict[str, dict] = {}
+_TLS = threading.local()
+_LOCAL_ACCOUNT_ID = "local"
+_LOCAL_VAULT_META = LIBRARY_DIR / ".local_vault.json"
+_PROFILE_NAME = "profile.json"
+_AVATAR_NAME = "avatar.jpg"
+_MAX_DISPLAY_NAME_LEN = 64
+_MAX_AVATAR_BYTES = 512 * 1024  # cropped JPEG upload cap
+_GIT_SYNC_LOCK = threading.Lock()
+
+
+def _auth_disabled() -> bool:
+    return os.environ.get("PAPER_READER_DISABLE_AUTH", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _auth_enabled() -> bool:
+    return not _auth_disabled()
+
+
+def _current_vault() -> Optional[Vault]:
+    return getattr(_TLS, "vault", None)
+
+
+def _set_current_vault(vault: Optional[Vault]) -> None:
+    _TLS.vault = vault
+
+
+def _require_vault() -> Vault:
+    vault = _current_vault()
+    if vault is None:
+        raise RuntimeError("vault is locked — sign in to unlock your library")
+    return vault
+
+
+def _empty_accounts() -> dict:
+    return {
+        "accounts": [],
+        "session_secret": os.urandom(32).hex(),
+    }
+
+
+def _save_accounts(data: dict) -> None:
+    from .vault import _atomic_write_bytes
+
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    _atomic_write_bytes(ACCOUNTS_PATH, json.dumps(data, indent=2).encode("utf-8"))
+
+
+def _migrate_legacy_auth_file(data: dict) -> dict:
+    """Fold single-account auth.json into accounts.json once.
+
+    Only imports when there are not yet any accounts — otherwise a restored
+    auth.json would create an orphan second account alongside an existing one.
+    """
+    if not LEGACY_AUTH_PATH.is_file():
+        return data
+    existing = data.get("accounts") or []
+    if existing:
+        # Accounts already present; drop stale auth.json so it cannot reappear.
+        try:
+            LEGACY_AUTH_PATH.unlink()
+        except OSError:
+            pass
+        return data
+    try:
+        legacy = json.loads(LEGACY_AUTH_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return data
+    if not isinstance(legacy, dict):
+        return data
+    if not legacy.get("key_hash") or not legacy.get("key_salt"):
+        return data
+    account = {
+        "id": uuid.uuid4().hex,
+        "key_salt": legacy["key_salt"],
+        "key_hash": legacy["key_hash"],
+        "enc_salt": os.urandom(16).hex(),
+        "createdAt": legacy.get("createdAt") or time.time(),
+    }
+    data.setdefault("accounts", []).append(account)
+    if legacy.get("session_secret") and not data.get("session_secret"):
+        data["session_secret"] = legacy["session_secret"]
+    data.setdefault("legacy_migrated", False)
+    _save_accounts(data)
+    try:
+        LEGACY_AUTH_PATH.unlink()
+    except OSError:
+        pass
+    return data
+
+
+def _load_accounts() -> dict:
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    if ACCOUNTS_PATH.is_file():
+        try:
+            data = json.loads(ACCOUNTS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("accounts"), list):
+                return _migrate_legacy_auth_file(data)
+        except (OSError, json.JSONDecodeError):
+            pass
+    data = _empty_accounts()
+    data = _migrate_legacy_auth_file(data)
+    if not ACCOUNTS_PATH.is_file():
+        _save_accounts(data)
+    return data
+
+
+def _account_exists() -> bool:
+    return bool(_load_accounts().get("accounts"))
+
+
+def _generate_secret_key() -> str:
+    """High-entropy account key. Format: pr_<urlsafe>. Never stored plaintext."""
+    return "pr_" + secrets.token_urlsafe(_SECRET_KEY_BYTES)
+
+
+def _hash_secret_key(secret_key: str, salt: bytes) -> str:
+    digest = hashlib.pbkdf2_hmac(
+        "sha256", secret_key.encode("utf-8"), salt, _PBKDF2_ITERATIONS
+    )
+    return digest.hex()
+
+
+def _normalize_secret_key(raw: str) -> str:
+    # Allow users to paste keys with accidental whitespace/newlines.
+    return "".join((raw or "").split())
+
+
+def _create_account() -> tuple[str, dict]:
+    """Create a new secret-key account with its own empty vault.
+    Returns (plaintext_secret_key, account_record). Does not remove prior accounts."""
+    with _AUTH_LOCK:
+        secret_key = _generate_secret_key()
+        key_salt = os.urandom(16)
+        enc_salt = os.urandom(16)
+        account = {
+            "id": uuid.uuid4().hex,
+            "key_salt": key_salt.hex(),
+            "key_hash": _hash_secret_key(secret_key, key_salt),
+            "enc_salt": enc_salt.hex(),
+            "createdAt": time.time(),
+        }
+        data = _load_accounts()
+        data.setdefault("accounts", []).append(account)
+        if not data.get("session_secret"):
+            data["session_secret"] = os.urandom(32).hex()
+        _save_accounts(data)
+        ensure_empty_vault(account["id"])
+        return secret_key, account
+
+
+def _find_account_for_key(secret_key: str) -> Optional[dict]:
+    key = _normalize_secret_key(secret_key)
+    if not key:
+        return None
+    for acct in _load_accounts().get("accounts") or []:
+        try:
+            salt = bytes.fromhex(acct["key_salt"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        expected = acct.get("key_hash") or ""
+        got = _hash_secret_key(key, salt)
+        if hmac.compare_digest(got, expected):
+            return acct
+    return None
+
+
+def _unlock_vault_for_account(secret_key: str, account: dict) -> Vault:
+    key = _normalize_secret_key(secret_key)
+    try:
+        enc_salt = bytes.fromhex(account["enc_salt"])
+    except (KeyError, ValueError, TypeError) as e:
+        raise ValueError("account is missing encryption salt") from e
+    fernet = derive_fernet(key, enc_salt)
+    vault = Vault(account["id"], fernet)
+    migrated = migrate_legacy_into_vault(vault)
+    if migrated:
+        print(f"[library] migrated {migrated} legacy paper(s) into vault {account['id'][:8]}…")
+    return vault
+
+
+def _ensure_auth_disabled_vault() -> Vault:
+    """When auth is off, unlock a machine-local vault automatically."""
+    existing = _current_vault()
+    if existing is not None and existing.account_id == _LOCAL_ACCOUNT_ID:
+        return existing
+    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    if _LOCAL_VAULT_META.is_file():
+        meta = json.loads(_LOCAL_VAULT_META.read_text(encoding="utf-8"))
+        secret = meta["secret"]
+        enc_salt = bytes.fromhex(meta["enc_salt"])
+    else:
+        secret = "pr_" + secrets.token_urlsafe(_SECRET_KEY_BYTES)
+        enc_salt = os.urandom(16)
+        _LOCAL_VAULT_META.write_text(
+            json.dumps({"secret": secret, "enc_salt": enc_salt.hex()}, indent=2),
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(_LOCAL_VAULT_META, 0o600)
+        except OSError:
+            pass
+    vault = Vault(_LOCAL_ACCOUNT_ID, derive_fernet(secret, enc_salt))
+    migrated = migrate_legacy_into_vault(vault)
+    if migrated:
+        print(f"[library] migrated {migrated} legacy paper(s) into local vault")
+    _set_current_vault(vault)
+    return vault
+
+
+def _make_session(account_id: str, vault: Vault) -> str:
+    token = secrets.token_urlsafe(32)
+    with _SESSION_LOCK:
+        _SESSIONS[token] = {
+            "account_id": account_id,
+            "vault": vault,
+            "exp": time.time() + SESSION_MAX_AGE,
+        }
+    return token
+
+
+def _get_session(token: str) -> Optional[dict]:
+    if not token:
+        return None
+    with _SESSION_LOCK:
+        sess = _SESSIONS.get(token)
+        if sess is None:
+            return None
+        if sess["exp"] < time.time():
+            _SESSIONS.pop(token, None)
+            return None
+        return sess
+
+
+def _clear_session(token: str) -> None:
+    if not token:
+        return
+    with _SESSION_LOCK:
+        _SESSIONS.pop(token, None)
+
+
+def _parse_cookies(cookie_header: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not cookie_header:
+        return out
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        key, val = part.split("=", 1)
+        out[key.strip()] = val.strip()
+    return out
+
+
+def _secure_cookies() -> bool:
+    """Use Secure cookies behind HTTPS (e.g. Fly.io)."""
+    raw = os.environ.get("PAPER_READER_SECURE_COOKIES", "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    # Fly / common PaaS markers
+    return bool(os.environ.get("FLY_APP_NAME") or os.environ.get("FLY_MACHINE_ID"))
+
+
+def _session_set_cookie(token: str) -> str:
+    parts = [
+        f"{SESSION_COOKIE}={token}",
+        "Path=/",
+        f"Max-Age={SESSION_MAX_AGE}",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if _secure_cookies():
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def _session_clear_cookie() -> str:
+    parts = [
+        f"{SESSION_COOKIE}=",
+        "Path=/",
+        "Max-Age=0",
+        "HttpOnly",
+        "SameSite=Lax",
+    ]
+    if _secure_cookies():
+        parts.append("Secure")
+    return "; ".join(parts)
+
+
+def _auth_entry_path() -> str:
+    """Unauthenticated browsers land on generate-key; sign-in is a secondary option."""
+    return "/signup"
+
+
+def _bind_vault_from_request(handler: "Handler") -> Optional[Vault]:
+    """Attach the unlocked vault for this request thread (if any)."""
+    if not _auth_enabled():
+        return _ensure_auth_disabled_vault()
+    cookies = _parse_cookies(handler.headers.get("Cookie", ""))
+    sess = _get_session(cookies.get(SESSION_COOKIE, ""))
+    if sess is None:
+        _set_current_vault(None)
+        return None
+    vault = sess["vault"]
+    _set_current_vault(vault)
+    return vault
+
+
+def _profile_path(vault: Vault) -> Path:
+    return vault.root / _PROFILE_NAME
+
+
+def _avatar_path(vault: Vault) -> Path:
+    return vault.root / _AVATAR_NAME
+
+
+def _normalize_display_name(raw: object) -> str:
+    if not isinstance(raw, str):
+        return ""
+    # Collapse whitespace; strip control characters.
+    cleaned = "".join(ch for ch in raw if ch.isprintable() or ch in "\t ")
+    cleaned = " ".join(cleaned.split())
+    return cleaned[:_MAX_DISPLAY_NAME_LEN]
+
+
+def _load_profile(vault: Vault) -> dict:
+    path = _profile_path(vault)
+    if not path.is_file():
+        return {"displayName": ""}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"displayName": ""}
+    if not isinstance(data, dict):
+        return {"displayName": ""}
+    return {"displayName": _normalize_display_name(data.get("displayName"))}
+
+
+def _save_profile(vault: Vault, display_name: str) -> dict:
+    from .vault import _atomic_write_bytes
+
+    profile = {"displayName": _normalize_display_name(display_name)}
+    path = _profile_path(vault)
+    _atomic_write_bytes(path, json.dumps(profile, indent=2).encode("utf-8"))
+    return profile
+
+
+def _account_public_payload(vault: Vault) -> dict:
+    profile = _load_profile(vault)
+    return {
+        "displayName": profile.get("displayName") or "",
+        "hasAvatar": _avatar_path(vault).is_file(),
+    }
+
+
 # ---------------------------------------------------------------- pipeline jobs
 # Uploads run in their own thread (ThreadingHTTPServer) and can take anywhere
 # from seconds to well over an hour (a real LaTeXML run on a large paper) --
@@ -62,7 +440,6 @@ PAPER_STATUSES = ("inbox", "later", "archive", "trash")
 # persisted: a server restart clears it, same as it would drop an in-flight
 # upload's connection anyway.
 _JOBS_LOCK = threading.Lock()
-_INDEX_LOCK = threading.Lock()
 _active_jobs: dict[str, dict] = {}
 _JOB_HISTORY_LIMIT = 30
 _job_history: list[dict] = []
@@ -108,56 +485,25 @@ def _list_jobs() -> dict:
     return {"active": active, "history": history}
 
 
-def _load_index() -> list[dict]:
-    if not INDEX_PATH.is_file():
+def _load_index(vault: Optional[Vault] = None) -> list[dict]:
+    v = vault or _current_vault()
+    if v is None:
         return []
-    try:
-        raw = INDEX_PATH.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    if not raw.strip():
-        return []
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        # Recover from truncated/double-written files (e.g. concurrent
-        # uploads appending an extra "]"). Take the first complete JSON
-        # value and ignore trailing junk.
-        try:
-            data, _end = json.JSONDecoder().raw_decode(raw.lstrip())
-            if isinstance(data, list):
-                try:
-                    _save_index(data)
-                except OSError:
-                    pass
-                return data
-        except json.JSONDecodeError:
-            pass
-        return []
+    return v.load_index()
 
 
-def _save_index(items: list[dict]) -> None:
-    """Atomic write so a crash or concurrent reader never sees a half-written
-    or double-appended index.json."""
-    LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(items, indent=2)
-    tmp_path = INDEX_PATH.with_suffix(".json.tmp")
-    with _INDEX_LOCK:
-        tmp_path.write_text(payload, encoding="utf-8")
-        os.replace(tmp_path, INDEX_PATH)
+def _save_index(items: list[dict], vault: Optional[Vault] = None) -> None:
+    v = vault or _require_vault()
+    v.save_index(items)
 
 
-def _process_upload(filename: str, data: bytes) -> dict:
-    """Run the same convert()+restyle() pipeline the CLI uses, save the
-    result into the library, and return its index entry."""
+def _process_upload(filename: str, data: bytes, vault: Optional[Vault] = None) -> dict:
+    """Run the same convert()+restyle() pipeline the CLI uses, encrypt into
+    the unlocked vault, and return its index entry."""
+    v = vault or _require_vault()
     job_id = _job_start(filename)
     try:
         paper_id = uuid.uuid4().hex[:12]
-        LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-        raw_workdir = RAW_DIR / paper_id
-        raw_workdir.mkdir(parents=True, exist_ok=True)
-
         is_html_source = filename.lower().endswith(HTML_SOURCE_SUFFIXES)
         is_pdf_source = filename.lower().endswith(PDF_SOURCE_SUFFIXES)
         is_epub_source = filename.lower().endswith(EPUB_SOURCE_SUFFIXES)
@@ -168,23 +514,29 @@ def _process_upload(filename: str, data: bytes) -> dict:
             else "latex"
         )
         with tempfile.TemporaryDirectory(prefix="paper_reader_upload_") as tmp:
-            tmp_path = Path(tmp) / os.path.basename(filename)
-            tmp_path.write_bytes(data)
+            tmp_root = Path(tmp)
+            upload_path = tmp_root / os.path.basename(filename)
+            upload_path.write_bytes(data)
+            raw_workdir = tmp_root / "raw"
+            raw_workdir.mkdir(parents=True, exist_ok=True)
             _job_stage(job_id, f"converting ({kind})")
             if is_html_source:
-                raw_html_path = convert_html(str(tmp_path), str(raw_workdir))
+                raw_html_path = convert_html(str(upload_path), str(raw_workdir))
             elif is_pdf_source:
-                raw_html_path = convert_pdf(str(tmp_path), str(raw_workdir))
+                raw_html_path = convert_pdf(str(upload_path), str(raw_workdir))
             elif is_epub_source:
-                raw_html_path = convert_epub(str(tmp_path), str(raw_workdir))
+                raw_html_path = convert_epub(str(upload_path), str(raw_workdir))
             else:
-                raw_html_path = convert_latex(str(tmp_path), str(raw_workdir))
+                raw_html_path = convert_latex(str(upload_path), str(raw_workdir))
 
-        _job_stage(job_id, "styling")
-        html_out, metadata = restyle(raw_html_path, source_name=filename, back_link="/")
-        (LIBRARY_DIR / f"{paper_id}.html").write_text(html_out, encoding="utf-8")
+            _job_stage(job_id, "styling")
+            html_out, metadata = restyle(raw_html_path, source_name=filename, back_link="/")
+            rel_raw = str(Path(raw_html_path).resolve().relative_to(raw_workdir.resolve()))
 
-        _job_stage(job_id, "saving")
+            _job_stage(job_id, "saving")
+            v.write_html(paper_id, html_out)
+            v.encrypt_raw_tree(paper_id, raw_workdir)
+
         entry = {
             "id": paper_id,
             "title": metadata.get("title") or filename,
@@ -194,16 +546,16 @@ def _process_upload(filename: str, data: bytes) -> dict:
             "sourceFilename": filename,
             "addedAt": time.time(),
             "lastOpenedAt": None,
-            "rawHtmlPath": raw_html_path,
+            "rawHtmlPath": rel_raw,
             "tags": [],
             "status": "inbox",
             "pinned": False,
             "completed": False,
             "deletedAt": None,
         }
-        items = _load_index()
+        items = _load_index(v)
         items.insert(0, entry)
-        _save_index(items)
+        _save_index(items, v)
         _job_finish(job_id, ok=True, paper_id=paper_id)
         return entry
     except Exception as e:
@@ -211,16 +563,44 @@ def _process_upload(filename: str, data: bytes) -> dict:
         raise
 
 
-def _rebuild_paper(entry: dict) -> bool:
+def _rebuild_paper(entry: dict, vault: Optional[Vault] = None) -> bool:
     """Re-run restyle() on a paper's stored raw (pre-restyle) HTML, so it
-    picks up the current reader CSS/JS. Returns False (and leaves the
-    entry untouched) if there's no raw HTML on disk to rebuild from --
-    e.g. papers uploaded before rawHtmlPath started being recorded."""
-    raw_html_path = entry.get("rawHtmlPath")
-    if not raw_html_path or not Path(raw_html_path).is_file():
+    picks up the current reader CSS/JS. Returns False if there's no raw
+    source available to rebuild from."""
+    v = vault or _require_vault()
+    paper_id = entry.get("id")
+    if not paper_id:
         return False
-    html_out, metadata = restyle(raw_html_path, source_name=entry.get("sourceFilename", ""), back_link="/")
-    (LIBRARY_DIR / f"{entry['id']}.html").write_text(html_out, encoding="utf-8")
+    raw_rel = entry.get("rawHtmlPath") or ""
+    with tempfile.TemporaryDirectory(prefix="paper_reader_rebuild_") as tmp:
+        dest = Path(tmp) / "raw"
+        if not v.decrypt_raw_tree(paper_id, dest):
+            # Legacy absolute path from pre-vault uploads (if still on disk).
+            if raw_rel and Path(raw_rel).is_file():
+                html_out, metadata = restyle(
+                    raw_rel, source_name=entry.get("sourceFilename", ""), back_link="/"
+                )
+                v.write_html(paper_id, html_out)
+                entry["title"] = metadata.get("title") or entry["title"]
+                entry["authors"] = [a["name"] for a in metadata.get("authors", [])]
+                entry["venue"] = metadata.get("venue", "")
+                entry["summary"] = (metadata.get("abstract") or "").strip()[:320]
+                return True
+            return False
+        candidate = dest / raw_rel if raw_rel and not str(raw_rel).startswith("vault:") else None
+        if candidate is None or not candidate.is_file():
+            htmls = sorted(dest.rglob("*.html"))
+            if not htmls:
+                return False
+            candidate = htmls[0]
+        html_out, metadata = restyle(
+            str(candidate), source_name=entry.get("sourceFilename", ""), back_link="/"
+        )
+        v.write_html(paper_id, html_out)
+        try:
+            entry["rawHtmlPath"] = str(candidate.resolve().relative_to(dest.resolve()))
+        except ValueError:
+            pass
     entry["title"] = metadata.get("title") or entry["title"]
     entry["authors"] = [a["name"] for a in metadata.get("authors", [])]
     entry["venue"] = metadata.get("venue", "")
@@ -228,51 +608,44 @@ def _rebuild_paper(entry: dict) -> bool:
     return True
 
 
-
 def _trigger_git_sync():
-    import threading, subprocess
+    import subprocess
     lib = LIBRARY_DIR
     if not (lib / ".git").exists():
         return
     def sync_task():
+        # Serialize syncs so concurrent paper opens don't pile up git pulls.
+        if not _GIT_SYNC_LOCK.acquire(blocking=False):
+            return
         try:
             subprocess.run(["git", "add", "."], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["git", "commit", "-m", "Auto-sync update"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["git", "pull", "origin", "main", "--rebase", "--strategy-option=ours"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(["git", "push", "origin", "main"], cwd=lib, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[library] git sync failed: {e}")
+        finally:
+            _GIT_SYNC_LOCK.release()
     threading.Thread(target=sync_task, daemon=True).start()
 
-def _delete_paper(paper_id: str) -> bool:
-    """Permanently remove a paper: its index entry, generated HTML, and
-    raw source are all deleted from disk with no way back. This is the
-    trash can's own "delete permanently" action (DELETE /api/papers/id)
-    -- ordinary deletion from inbox/later/archive is a soft delete via
-    _set_paper_status(paper_id, "trash") instead, which this function
-    has no involvement in. Returns False if no entry with that id
-    exists."""
-    items = _load_index()
+
+def _delete_paper(paper_id: str, vault: Optional[Vault] = None) -> bool:
+    """Permanently remove a paper from the unlocked vault."""
+    v = vault or _require_vault()
+    items = _load_index(v)
     remaining = [e for e in items if e["id"] != paper_id]
     if len(remaining) == len(items):
         return False
-    _save_index(remaining)
+    _save_index(remaining, v)
     _trigger_git_sync()
-    html_path = LIBRARY_DIR / f"{paper_id}.html"
-    if html_path.is_file():
-        html_path.unlink()
-    raw_path = RAW_DIR / paper_id
-    if raw_path.is_dir():
-        shutil.rmtree(raw_path)
+    v.delete_paper_files(paper_id)
     return True
 
 
-def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
-    """Replace a paper's tag list. Tags are normalized (trimmed, empty
-    ones dropped, de-duplicated case-insensitively but keeping first
-    casing seen) and sorted. Returns the updated entry, or None if no
-    paper with that id exists."""
-    items = _load_index()
+def _set_paper_tags(paper_id: str, tags: list, vault: Optional[Vault] = None) -> dict | None:
+    """Replace a paper's tag list."""
+    v = vault or _require_vault()
+    items = _load_index(v)
     entry = next((e for e in items if e["id"] == paper_id), None)
     if entry is None:
         return None
@@ -285,76 +658,86 @@ def _set_paper_tags(paper_id: str, tags: list) -> dict | None:
             continue
         seen.setdefault(t.lower(), t)
     entry["tags"] = sorted(seen.values(), key=str.lower)
-    _save_index(items)
+    _save_index(items, v)
     _trigger_git_sync()
     return entry
 
 
-
-def _update_paper(paper_id: str, updates: dict) -> dict | None:
-    items = _load_index()
+def _update_paper(paper_id: str, updates: dict, vault: Optional[Vault] = None) -> dict | None:
+    v = vault or _require_vault()
+    items = _load_index(v)
     entry = next((e for e in items if e["id"] == paper_id), None)
     if entry is None:
         return None
-    for k, v in updates.items():
+    for k, val in updates.items():
         if k in ("pinned", "completed"):
-            entry[k] = bool(v)
-    _save_index(items)
+            entry[k] = bool(val)
+    _save_index(items, v)
     _trigger_git_sync()
     return entry
 
 
-def _set_paper_status(paper_id: str, status: str) -> dict | None:
-    """Move a paper between inbox/later/archive/trash. Returns the
-    updated entry, or None if no paper with that id exists. Caller is
-    responsible for validating status against PAPER_STATUSES.
-
-    "trash" is a soft delete -- the entry, its generated HTML, and its
-    raw source are all left untouched on disk, exactly like any other
-    status. Only _delete_paper() (used for the trash can's own
-    "delete permanently" action) actually removes anything. deletedAt
-    just records when a paper most recently landed in the trash, so the
-    trash view can show "Deleted 3 days ago"; it's cleared again if the
-    paper is restored to any other status."""
-    items = _load_index()
+def _set_paper_status(paper_id: str, status: str, vault: Optional[Vault] = None) -> dict | None:
+    """Move a paper between inbox/later/archive/trash."""
+    v = vault or _require_vault()
+    items = _load_index(v)
     entry = next((e for e in items if e["id"] == paper_id), None)
     if entry is None:
         return None
     entry["status"] = status
     entry["deletedAt"] = time.time() if status == "trash" else None
-    _save_index(items)
+    _save_index(items, v)
     _trigger_git_sync()
     return entry
 
 
-def _touch_opened(paper_id: str) -> None:
-    """Record that a paper's reader page was just served, for the
-    "most recently opened" sort option. Best-effort: silently does
-    nothing if the id isn't in the index."""
-    items = _load_index()
-    entry = next((e for e in items if e["id"] == paper_id), None)
-    if entry is None:
+def _touch_opened(paper_id: str, vault: Optional[Vault] = None) -> None:
+    """Record that a paper's reader page was just served."""
+    v = vault or _current_vault()
+    if v is None:
         return
-    entry["lastOpenedAt"] = time.time()
-    _save_index(items)
+    try:
+        items = _load_index(v)
+        entry = next((e for e in items if e["id"] == paper_id), None)
+        if entry is None:
+            return
+        entry["lastOpenedAt"] = time.time()
+        _save_index(items, v)
+    except OSError as e:
+        # Never fail serving a paper because last-opened couldn't flush
+        # (concurrent index writes used to raise FileNotFoundError here).
+        print(f"[library] could not update lastOpenedAt for {paper_id}: {e}")
 
 
-def rebuild_library(quiet: bool = False) -> tuple[int, int]:
-    """Re-apply the current restyle() output to every paper in the
-    library. Called automatically on server startup so reader changes
-    (CSS, highlighting, etc.) show up in already-uploaded papers without
-    needing to re-upload them."""
-    items = _load_index()
-    rebuilt = sum(1 for entry in items if _rebuild_paper(entry))
-    skipped = len(items) - rebuilt
-    if items:
-        _save_index(items)
-    if not quiet:
-        msg = f"[library] rebuilt {rebuilt} paper(s) with the current reader styling"
-        if skipped:
-            msg += f"; skipped {skipped} (no stored raw source -- re-upload to enable rebuilding)"
-        print(msg)
-    return rebuilt, skipped
+def rebuild_library(quiet: bool = False, vault: Optional[Vault] = None) -> tuple[int, int]:
+    """Re-apply restyle() to every paper in the vault. Deferred until unlock
+    when auth is enabled (DEK is not available at cold start)."""
+    v = vault
+    if v is None:
+        if not _auth_enabled():
+            v = _ensure_auth_disabled_vault()
+        else:
+            v = _current_vault()
+    if v is None:
+        if not quiet:
+            print("[library] vault locked — rebuild deferred until sign-in")
+        return 0, 0
+    prev = _current_vault()
+    _set_current_vault(v)
+    try:
+        items = _load_index(v)
+        rebuilt = sum(1 for entry in items if _rebuild_paper(entry, v))
+        skipped = len(items) - rebuilt
+        if items:
+            _save_index(items, v)
+        if not quiet:
+            msg = f"[library] rebuilt {rebuilt} paper(s) with the current reader styling"
+            if skipped:
+                msg += f"; skipped {skipped} (no stored raw source -- re-upload to enable rebuilding)"
+            print(msg)
+        return rebuilt, skipped
+    finally:
+        _set_current_vault(prev)
 
 
 HOME_PAGE_HTML = """<!doctype html>
@@ -523,6 +906,7 @@ html.library-sidebar-collapsed .sidebar {
   transition: background-color 0.15s ease;
 }
 .nav-item:hover { background: var(--rule); }
+.nav-item.active { background: var(--rule); font-weight: 600; }
 .nav-item-sub { color: var(--muted); font-size: 0.85em; margin-left: auto; }
 .nav-section-label {
   margin: 1.1em 0 0.3em; padding: 0 0.6em; font-size: 0.72em; font-weight: 600; letter-spacing: 0.05em;
@@ -587,6 +971,64 @@ html.library-sidebar-collapsed .sidebar {
   background: var(--bg); color: var(--fg); font-size: 0.78em; cursor: pointer;
 }
 .prefs-btn:hover { background: var(--rule); }
+
+/* ----------------------------------------------------------- account view */
+.account-view { max-width: 420px; }
+.account-view[hidden], .library-view[hidden] { display: none !important; }
+.account-hero {
+  display: flex; flex-direction: column; align-items: center; gap: 1.1em;
+  padding: 0.4em 0 1.6em; border-bottom: 1px solid var(--rule); margin-bottom: 1.4em;
+}
+.account-avatar {
+  width: 112px; height: 112px; border-radius: 50%; overflow: hidden;
+  background: var(--rule); border: 2px solid var(--rule);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 2.4em; font-weight: 600; color: var(--muted); position: relative;
+}
+.account-avatar img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.account-avatar-actions { display: flex; gap: 0.5em; flex-wrap: wrap; justify-content: center; }
+.account-field { display: flex; flex-direction: column; gap: 0.35em; margin-bottom: 1.1em; }
+.account-field label {
+  font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600;
+}
+.account-field input {
+  padding: 0.7em 0.85em; border-radius: 8px; border: 1px solid var(--rule);
+  background: var(--card-bg); color: var(--fg); font-size: 0.95em; outline: none;
+}
+.account-field input:focus { border-color: var(--accent); }
+.account-actions { display: flex; gap: 0.5em; align-items: center; }
+.account-note {
+  margin-top: 1.4em; font-size: 0.82em; color: var(--muted); line-height: 1.5;
+}
+.account-save-status { font-size: 0.82em; color: var(--muted); min-height: 1.2em; }
+.account-save-status.error { color: var(--error); }
+.avatar-crop-overlay {
+  position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,0.55);
+  display: flex; align-items: center; justify-content: center; padding: 1.2em;
+}
+.avatar-crop-overlay[hidden] { display: none; }
+.avatar-crop-card {
+  width: min(420px, 100%); background: var(--card-bg); color: var(--fg);
+  border: 1px solid var(--rule); border-radius: 14px; padding: 1.1em 1.2em 1.2em;
+  box-shadow: 0 16px 40px rgba(0,0,0,0.28);
+}
+.avatar-crop-card h2 { margin: 0 0 0.35em; font-size: 1.05em; font-weight: 600; }
+.avatar-crop-card p { margin: 0 0 0.9em; font-size: 0.82em; color: var(--muted); }
+.avatar-crop-stage {
+  position: relative; width: 100%; aspect-ratio: 1; border-radius: 12px; overflow: hidden;
+  background: #111; cursor: grab; touch-action: none; user-select: none;
+}
+.avatar-crop-stage.dragging { cursor: grabbing; }
+.avatar-crop-stage canvas { display: block; width: 100%; height: 100%; }
+.avatar-crop-mask {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(circle closest-side, transparent 66%, rgba(0,0,0,0.55) 67%);
+}
+.avatar-crop-controls { margin-top: 0.9em; display: flex; flex-direction: column; gap: 0.7em; }
+.avatar-crop-controls input[type=range] { width: 100%; }
+.avatar-crop-actions { display: flex; gap: 0.5em; justify-content: flex-end; }
 
 /* --------------------------------------------------------------- main col */
 .main-col {
@@ -800,6 +1242,17 @@ input[type=file] { display: none; }
 
 .info-hl-empty { color: var(--muted); font-size: 0.83em; padding: 1.2em; text-align: center; }
 .info-hl-item { border: 1px solid var(--rule); border-radius: 8px; padding: 0.7em; margin-bottom: 0.8em; }
+.info-hl-author {
+  display: flex; align-items: center; gap: 0.45em; margin-bottom: 0.5em;
+  font-size: 0.78em; color: var(--muted);
+}
+.info-hl-author-avatar {
+  width: 22px; height: 22px; border-radius: 50%; overflow: hidden; flex-shrink: 0;
+  background: var(--rule); color: var(--fg); font-size: 0.72em; font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.info-hl-author-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.info-hl-author-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); font-weight: 600; }
 .info-hl-quote {
   border-left: 3px solid var(--hl-color, #ffeb3b);
   padding-left: 0.6em; font-size: 0.85em; line-height: 1.45; margin-bottom: 0.5em;
@@ -989,6 +1442,7 @@ input[type=file] { display: none; }
       <div class="nav-tags" id="navTags"></div>
     </nav>
     <div class="sidebar-bottom">
+      <button type="button" class="nav-item" id="navAccountBtn">Account</button>
       <button type="button" class="nav-item" id="navSearchBtn" title="Search papers (/)">Search</button>
       <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
       <div class="prefs-popover" id="prefsPopover" hidden>
@@ -1019,6 +1473,7 @@ input[type=file] { display: none; }
           </div>
           <div id="prefsGitStatus" style="font-size: 0.75em; color: var(--muted); text-align: center; margin-top: 0.2em;">Not configured</div>
         </div>
+        <!--AUTH_LOGOUT_SLOT-->
       </div>
       <div class="sidebar-footer">
         <a href="/pipeline">Pipeline</a>
@@ -1034,6 +1489,7 @@ input[type=file] { display: none; }
 
   <main class="main-col">
     <div class="main-col-scroll">
+    <div id="libraryView" class="library-view">
     <div class="main-topbar">
       <div class="topbar-title">
         Library
@@ -1065,6 +1521,29 @@ input[type=file] { display: none; }
 
     <div class="paper-list" id="paperList"></div>
     </div>
+
+    <div id="accountView" class="account-view" hidden>
+      <div class="main-topbar">
+        <div class="topbar-title">Account</div>
+      </div>
+      <div class="account-hero">
+        <div class="account-avatar" id="accountAvatar" aria-hidden="true">?</div>
+        <div class="account-avatar-actions">
+          <button type="button" class="prefs-btn" id="accountAvatarBtn" style="padding: 0.45em 0.9em;">Upload photo</button>
+          <button type="button" class="prefs-btn" id="accountAvatarRemoveBtn" style="padding: 0.45em 0.9em;" hidden>Remove</button>
+        </div>
+      </div>
+      <div class="account-field">
+        <label for="accountDisplayName">Display name</label>
+        <input type="text" id="accountDisplayName" maxlength="64" placeholder="Your name" autocomplete="nickname">
+      </div>
+      <div class="account-actions">
+        <button type="button" class="prefs-btn" id="accountSaveBtn" style="padding: 0.55em 1.1em; flex: 0 0 auto;">Save</button>
+        <span class="account-save-status" id="accountSaveStatus"></span>
+      </div>
+      <p class="account-note">Your secret key is never shown here and cannot be changed from this page. Keep a private offline copy of the key you already saved.</p>
+    </div>
+    </div>
     <button type="button" class="add-paper-fab" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source, PDF, EPUB, or saved HTML page)">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -1082,6 +1561,26 @@ input[type=file] { display: none; }
 </div>
 
 <input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm,.pdf,.epub,application/epub+zip">
+<input type="file" id="avatarFileInput" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif">
+
+<div class="avatar-crop-overlay" id="avatarCropOverlay" hidden>
+  <div class="avatar-crop-card" role="dialog" aria-modal="true" aria-labelledby="avatarCropTitle">
+    <h2 id="avatarCropTitle">Crop profile photo</h2>
+    <p>Drag to reposition. Use the slider to zoom. The circle is what gets saved.</p>
+    <div class="avatar-crop-stage" id="avatarCropStage">
+      <canvas id="avatarCropCanvas" width="360" height="360"></canvas>
+      <div class="avatar-crop-mask" aria-hidden="true"></div>
+    </div>
+    <div class="avatar-crop-controls">
+      <label for="avatarCropZoom" style="font-size: 0.78em; color: var(--muted);">Zoom</label>
+      <input type="range" id="avatarCropZoom" min="1" max="3" step="0.01" value="1">
+      <div class="avatar-crop-actions">
+        <button type="button" class="prefs-btn" id="avatarCropCancel" style="padding: 0.45em 0.9em; flex: 0 0 auto;">Cancel</button>
+        <button type="button" class="prefs-btn" id="avatarCropApply" style="padding: 0.45em 0.9em; flex: 0 0 auto;">Apply</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div class="drop-overlay" id="dropOverlay" hidden>
   <div class="drop-overlay-card">
@@ -1137,6 +1636,7 @@ input[type=file] { display: none; }
     '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>' +
     '<path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>';
   var HOME_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>';
+  var ACCOUNT_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>';
   var SEARCH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>';
   var PREFS_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
   var TAG_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="9" x2="20" y2="9"></line><line x1="4" y1="15" x2="20" y2="15"></line><line x1="10" y1="3" x2="8" y2="21"></line><line x1="16" y1="3" x2="14" y2="21"></line></svg>';
@@ -1275,6 +1775,37 @@ input[type=file] { display: none; }
       pk.addEventListener("input", function() {
         var v = pk.value.toLowerCase().trim() || "p";
         saveSettings({ paletteShortcut: v });
+      });
+    }
+
+    var exportBtn = document.getElementById("prefsExportBtn");
+    if (exportBtn) {
+      exportBtn.addEventListener("click", function () {
+        exportBtn.disabled = true;
+        fetch("/api/export", { credentials: "same-origin" })
+          .then(function (r) {
+            if (!r.ok) throw new Error("export failed");
+            return r.blob();
+          })
+          .then(function (blob) {
+            var a = document.createElement("a");
+            a.href = URL.createObjectURL(blob);
+            a.download = "paper-library-export.zip";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+          })
+          .catch(function () { alert("Could not export library"); })
+          .finally(function () { exportBtn.disabled = false; });
+      });
+    }
+
+    var logoutBtn = document.getElementById("prefsLogoutBtn");
+    if (logoutBtn) {
+      logoutBtn.addEventListener("click", function () {
+        fetch("/api/logout", { method: "POST", credentials: "same-origin" })
+          .finally(function () { window.location.href = "/signup"; });
       });
     }
   }
@@ -1809,6 +2340,34 @@ input[type=file] { display: none; }
       highlights.forEach(function (h) {
         var item = document.createElement("div");
         item.className = "info-hl-item";
+
+        var authorName = (h.authorName || "").trim();
+        if (authorName || h.authorHasAvatar) {
+          var author = document.createElement("div");
+          author.className = "info-hl-author";
+          var av = document.createElement("div");
+          av.className = "info-hl-author-avatar";
+          av.setAttribute("aria-hidden", "true");
+          if (h.authorHasAvatar) {
+            var img = document.createElement("img");
+            img.alt = "";
+            img.src = "/api/account/avatar";
+            img.addEventListener("error", function () {
+              av.textContent = (authorName || "?").charAt(0).toUpperCase();
+            });
+            av.appendChild(img);
+          } else {
+            av.textContent = (authorName || "?").charAt(0).toUpperCase();
+          }
+          author.appendChild(av);
+          if (authorName) {
+            var nm = document.createElement("span");
+            nm.className = "info-hl-author-name";
+            nm.textContent = authorName;
+            author.appendChild(nm);
+          }
+          item.appendChild(author);
+        }
 
         var quote = document.createElement("div");
         quote.className = "info-hl-quote";
@@ -2368,6 +2927,7 @@ input[type=file] { display: none; }
   applyActiveTab();
 
   document.getElementById("navHome").addEventListener("click", function () {
+    showLibraryView();
     closeInfoPanel();
     activeTags = [];
     currentTab = "inbox";
@@ -2380,7 +2940,266 @@ input[type=file] { display: none; }
     searchBox.value = "";
     render("");
   });
+
+  var currentMainView = "library";
+  function setNavActive() {
+    var home = document.getElementById("navHome");
+    var acct = document.getElementById("navAccountBtn");
+    if (home) home.classList.toggle("active", currentMainView === "library");
+    if (acct) acct.classList.toggle("active", currentMainView === "account");
+  }
+  function showLibraryView() {
+    currentMainView = "library";
+    document.getElementById("libraryView").hidden = false;
+    document.getElementById("accountView").hidden = true;
+    document.getElementById("addPaperBtn").hidden = false;
+    document.getElementById("infoPanel").hidden = document.getElementById("infoPanel").hidden;
+    setNavActive();
+  }
+  function showAccountView() {
+    currentMainView = "account";
+    closeInfoPanel();
+    var pop = document.getElementById("prefsPopover");
+    if (pop) pop.hidden = true;
+    document.getElementById("libraryView").hidden = true;
+    document.getElementById("accountView").hidden = false;
+    document.getElementById("addPaperBtn").hidden = true;
+    setNavActive();
+    loadAccountProfile();
+  }
+
+  function initialFromName(name) {
+    var t = (name || "").trim();
+    return t ? t.charAt(0).toUpperCase() : "?";
+  }
+  function renderAccountAvatar(hasAvatar, displayName) {
+    var el = document.getElementById("accountAvatar");
+    var removeBtn = document.getElementById("accountAvatarRemoveBtn");
+    if (!el) return;
+    el.innerHTML = "";
+    if (hasAvatar) {
+      var img = document.createElement("img");
+      img.alt = "";
+      img.src = "/api/account/avatar?t=" + Date.now();
+      el.appendChild(img);
+      if (removeBtn) removeBtn.hidden = false;
+    } else {
+      el.textContent = initialFromName(displayName);
+      if (removeBtn) removeBtn.hidden = true;
+    }
+  }
+  function loadAccountProfile() {
+    var status = document.getElementById("accountSaveStatus");
+    if (status) { status.textContent = ""; status.classList.remove("error"); }
+    fetch("/api/account", { credentials: "same-origin" })
+      .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.data.error || "failed");
+        var name = res.data.displayName || "";
+        document.getElementById("accountDisplayName").value = name;
+        renderAccountAvatar(!!res.data.hasAvatar, name);
+      })
+      .catch(function () {
+        if (status) {
+          status.textContent = "Could not load account";
+          status.classList.add("error");
+        }
+      });
+  }
+
+  function initAccountView() {
+    var navAccount = document.getElementById("navAccountBtn");
+    if (!navAccount) return;
+    navAccount.addEventListener("click", function () { showAccountView(); });
+
+    document.getElementById("accountSaveBtn").addEventListener("click", function () {
+      var status = document.getElementById("accountSaveStatus");
+      var name = document.getElementById("accountDisplayName").value;
+      status.textContent = "Saving…";
+      status.classList.remove("error");
+      fetch("/api/account", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName: name })
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.data.error || "save failed");
+          document.getElementById("accountDisplayName").value = res.data.displayName || "";
+          var el = document.getElementById("accountAvatar");
+          if (el && !el.querySelector("img")) el.textContent = initialFromName(res.data.displayName);
+          status.textContent = "Saved";
+          restampAllStoredHighlights(res.data);
+        })
+        .catch(function (e) {
+          status.textContent = e.message || "Could not save";
+          status.classList.add("error");
+        });
+    });
+
+    var avatarInput = document.getElementById("avatarFileInput");
+    document.getElementById("accountAvatarBtn").addEventListener("click", function () {
+      avatarInput.value = "";
+      avatarInput.click();
+    });
+    document.getElementById("accountAvatarRemoveBtn").addEventListener("click", function () {
+      fetch("/api/account/avatar", { method: "DELETE", credentials: "same-origin" })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+        .then(function (res) {
+          if (!res.ok) throw new Error(res.data.error || "remove failed");
+          renderAccountAvatar(false, document.getElementById("accountDisplayName").value);
+          restampAllStoredHighlights({
+            displayName: document.getElementById("accountDisplayName").value,
+            hasAvatar: false
+          });
+        })
+        .catch(function () { alert("Could not remove photo"); });
+    });
+
+    var crop = {
+      img: null,
+      scale: 1,
+      minScale: 1,
+      offsetX: 0,
+      offsetY: 0,
+      dragging: false,
+      lastX: 0,
+      lastY: 0
+    };
+    var overlay = document.getElementById("avatarCropOverlay");
+    var stage = document.getElementById("avatarCropStage");
+    var canvas = document.getElementById("avatarCropCanvas");
+    var ctx = canvas.getContext("2d");
+    var zoom = document.getElementById("avatarCropZoom");
+
+    function drawCrop() {
+      var w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#111";
+      ctx.fillRect(0, 0, w, h);
+      if (!crop.img) return;
+      var dw = crop.img.width * crop.scale;
+      var dh = crop.img.height * crop.scale;
+      var dx = (w - dw) / 2 + crop.offsetX;
+      var dy = (h - dh) / 2 + crop.offsetY;
+      ctx.drawImage(crop.img, dx, dy, dw, dh);
+    }
+    function openCrop(file) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        crop.img = img;
+        var fit = Math.max(canvas.width / img.width, canvas.height / img.height);
+        crop.minScale = fit;
+        crop.scale = fit;
+        crop.offsetX = 0;
+        crop.offsetY = 0;
+        zoom.min = "1";
+        zoom.max = "3";
+        zoom.value = "1";
+        overlay.hidden = false;
+        drawCrop();
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        alert("Could not read that image");
+      };
+      img.src = url;
+    }
+    function closeCrop() {
+      overlay.hidden = true;
+      crop.img = null;
+    }
+    function effectiveScale() {
+      return crop.minScale * parseFloat(zoom.value || "1");
+    }
+    avatarInput.addEventListener("change", function () {
+      var f = avatarInput.files && avatarInput.files[0];
+      if (!f) return;
+      if (!/^image\\/(jpeg|png|webp|gif)$/i.test(f.type) && !/\\.(jpe?g|png|webp|gif)$/i.test(f.name)) {
+        alert("Choose a JPEG, PNG, WebP, or GIF image");
+        return;
+      }
+      openCrop(f);
+    });
+    zoom.addEventListener("input", function () {
+      crop.scale = effectiveScale();
+      drawCrop();
+    });
+    stage.addEventListener("pointerdown", function (e) {
+      if (!crop.img) return;
+      crop.dragging = true;
+      stage.classList.add("dragging");
+      crop.lastX = e.clientX;
+      crop.lastY = e.clientY;
+      stage.setPointerCapture(e.pointerId);
+    });
+    stage.addEventListener("pointermove", function (e) {
+      if (!crop.dragging) return;
+      crop.offsetX += e.clientX - crop.lastX;
+      crop.offsetY += e.clientY - crop.lastY;
+      crop.lastX = e.clientX;
+      crop.lastY = e.clientY;
+      drawCrop();
+    });
+    function endDrag() {
+      crop.dragging = false;
+      stage.classList.remove("dragging");
+    }
+    stage.addEventListener("pointerup", endDrag);
+    stage.addEventListener("pointercancel", endDrag);
+    document.getElementById("avatarCropCancel").addEventListener("click", closeCrop);
+    document.getElementById("avatarCropApply").addEventListener("click", function () {
+      if (!crop.img) return;
+      var out = document.createElement("canvas");
+      out.width = 256;
+      out.height = 256;
+      var octx = out.getContext("2d");
+      octx.fillStyle = "#111";
+      octx.fillRect(0, 0, 256, 256);
+      octx.save();
+      octx.beginPath();
+      octx.arc(128, 128, 128, 0, Math.PI * 2);
+      octx.closePath();
+      octx.clip();
+      var scaleRatio = 256 / canvas.width;
+      var dw = crop.img.width * crop.scale * scaleRatio;
+      var dh = crop.img.height * crop.scale * scaleRatio;
+      var dx = (256 - dw) / 2 + crop.offsetX * scaleRatio;
+      var dy = (256 - dh) / 2 + crop.offsetY * scaleRatio;
+      octx.drawImage(crop.img, dx, dy, dw, dh);
+      octx.restore();
+      out.toBlob(function (blob) {
+        if (!blob) { alert("Could not crop image"); return; }
+        fetch("/api/account/avatar", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "image/jpeg" },
+          body: blob
+        }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); })
+          .then(function (res) {
+            if (!res.ok) throw new Error(res.data.error || "upload failed");
+            closeCrop();
+            renderAccountAvatar(true, document.getElementById("accountDisplayName").value);
+            restampAllStoredHighlights({
+              displayName: document.getElementById("accountDisplayName").value,
+              hasAvatar: true
+            });
+          })
+          .catch(function (e) { alert(e.message || "Could not upload photo"); });
+      }, "image/jpeg", 0.92);
+    });
+    setNavActive();
+  }
   document.addEventListener("keydown", function (e) {
+    if (!document.getElementById("avatarCropOverlay").hidden) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        document.getElementById("avatarCropOverlay").hidden = true;
+      }
+      return;
+    }
     if (!confirmOverlay.hidden) {
       if (e.key === "Escape") closeConfirmDialog();
       return;
@@ -2453,10 +3272,54 @@ input[type=file] { display: none; }
   });
 
   initTheme();
+  initAccountView();
   initPullToRefresh();
+
+  function restampAllStoredHighlights(profile) {
+    var name = ((profile && profile.displayName) || "").trim() || "You";
+    var hasAvatar = !!(profile && profile.hasAvatar);
+    var keys = [];
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (k && k.indexOf("paper_reader_highlights::") === 0) keys.push(k);
+    }
+    var touched = 0;
+    keys.forEach(function (key) {
+      try {
+        var list = JSON.parse(localStorage.getItem(key) || "[]");
+        if (!Array.isArray(list) || !list.length) return;
+        var changed = false;
+        list.forEach(function (h) {
+          if (!h || typeof h !== "object") return;
+          var theirs = (h.authorName ? String(h.authorName) : "").trim();
+          // Only restamp highlights already owned by this account (or legacy
+          // unmarked when signed in as anonymous "You"). Never rewrite others.
+          var isOwn = theirs ? theirs === name : name === "You";
+          if (!isOwn) return;
+          if (h.authorName !== name || !!h.authorHasAvatar !== hasAvatar) {
+            h.authorName = name;
+            h.authorHasAvatar = hasAvatar;
+            changed = true;
+          }
+        });
+        if (changed) {
+          localStorage.setItem(key, JSON.stringify(list));
+          touched += 1;
+        }
+      } catch (e) {}
+    });
+    return touched;
+  }
+  fetch("/api/account", { credentials: "same-origin" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (profile) {
+      if (profile) restampAllStoredHighlights(profile);
+    })
+    .catch(function () {});
   
   // Inject icons into static elements
   document.getElementById("navHome").innerHTML = HOME_ICON + "<span>Home</span>";
+  document.getElementById("navAccountBtn").innerHTML = ACCOUNT_ICON + "<span>Account</span>";
   document.getElementById("navSearchBtn").innerHTML = SEARCH_ICON + "<span>Search</span>";
   document.getElementById("navPrefsBtn").innerHTML = PREFS_ICON + '<span>Preferences</span> <span class="nav-item-sub" id="prefsThemeLabel">Auto</span>';
   
@@ -2736,6 +3599,12 @@ paper-reader --rebuild-library</code></pre>
 
   <h2>Sync (optional)</h2>
   <p>Preferences &rarr; paste a git remote &rarr; <strong>Setup</strong>, then <strong>Sync Now</strong> (or pull-to-refresh on the library) to backup/sync the library folder.</p>
+
+  <h2>Account &amp; vaults</h2>
+  <p>Accounts are anonymous secret keys &mdash; no email or username. Each key unlocks its own encrypted vault on this device. Generate a key and save it; it is shown once and cannot be recovered. A new key starts an empty vault; your previous key still opens its vault. Export a plaintext ZIP from Preferences. Log out from Preferences.</p>
+  <p>To leave the library open (no sign-in), start with:</p>
+  <pre><code>export PAPER_READER_DISABLE_AUTH=1
+paper-reader --library</code></pre>
 </div>
 </body>
 </html>
@@ -2922,32 +3791,459 @@ setInterval(refresh, 2000);
 </html>
 """
 
+LOGIN_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in &mdash; Andrew's Paper Library</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db;
+  --card-bg: #fbfaf8; --error: #b3261e;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  padding: 2rem 1.2rem;
+}
+.card {
+  width: 100%; max-width: 420px; background: var(--card-bg); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 1.8em 1.6em 1.6em;
+}
+.brand {
+  display: flex; align-items: center; gap: 0.65em; margin-bottom: 1.4em;
+  font-weight: 600; font-size: 1.05em; line-height: 1.25;
+}
+.brand svg { width: 2.6em; height: 2.6em; flex-shrink: 0; }
+h1 { font-size: 1.25em; margin: 0 0 0.35em; }
+.lede { color: var(--muted); font-size: 0.92em; line-height: 1.5; margin: 0 0 1.3em; }
+label { display: block; font-size: 0.82em; font-weight: 600; color: var(--muted); margin: 0 0 0.4em; }
+textarea {
+  width: 100%; min-height: 5.2em; padding: 0.7em 0.85em; border-radius: 8px; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--fg); font-size: 0.88em; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  outline: none; resize: vertical; line-height: 1.45;
+}
+textarea:focus { border-color: var(--accent); }
+button[type="submit"] {
+  width: 100%; margin-top: 1.15em; padding: 0.75em 1em; border-radius: 8px; border: none;
+  background: var(--fg); color: var(--bg); font-size: 0.95em; font-weight: 600; cursor: pointer;
+}
+button[type="submit"]:hover { opacity: 0.9; }
+button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
+.error { color: var(--error); font-size: 0.88em; margin-top: 0.85em; min-height: 1.3em; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path fill="#c47a5a" d="M9.5 19.2h13l-1.55 9.1c-.15.9-.9 1.55-1.8 1.55h-6.3c-.9 0-1.65-.65-1.8-1.55L9.5 19.2z"/>
+      <ellipse fill="#4a3728" cx="16" cy="19.1" rx="6.6" ry="2.15"/>
+      <path fill="none" stroke="#3a6b4f" stroke-width="1.7" stroke-linecap="round" d="M16 19.1c0-3.2.15-6.4.1-9.5"/>
+      <ellipse fill="#4fa882" cx="10.8" cy="12.2" rx="5.1" ry="2.55" transform="rotate(-42 10.8 12.2)"/>
+      <ellipse fill="#3d8b6e" cx="21.2" cy="11.6" rx="5.1" ry="2.55" transform="rotate(40 21.2 11.6)"/>
+      <ellipse fill="#2f6f56" cx="16" cy="6.6" rx="3.35" ry="5.1"/>
+    </svg>
+    <span>Andrew&rsquo;s Paper Library</span>
+  </div>
+  <h1>Sign in</h1>
+  <p class="lede">Paste your secret key. No username or email &mdash; the key is your account.</p>
+  <form id="loginForm">
+    <label for="secretKey">Secret key</label>
+    <textarea id="secretKey" name="secretKey" autocomplete="off" spellcheck="false" required autofocus placeholder="pr_…"></textarea>
+    <button type="submit" id="submitBtn">Sign in</button>
+    <div class="error" id="error" aria-live="polite"></div>
+  </form>
+</div>
+<script>
+(function () {
+  var form = document.getElementById("loginForm");
+  var keyEl = document.getElementById("secretKey");
+  var btn = document.getElementById("submitBtn");
+  var err = document.getElementById("error");
+  var params = new URLSearchParams(window.location.search);
+  var next = params.get("next") || "/";
+  if (!next.startsWith("/") || next.startsWith("//")) next = "/";
+
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    err.textContent = "";
+    btn.disabled = true;
+    fetch("/api/login", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secretKey: keyEl.value })
+    }).then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        err.textContent = res.data.error || "Invalid secret key";
+        btn.disabled = false;
+        keyEl.focus();
+        return;
+      }
+      window.location.replace(next);
+    }).catch(function () {
+      err.textContent = "Could not reach the server";
+      btn.disabled = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>
+"""
+
+SIGNUP_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create account &mdash; Andrew's Paper Library</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db;
+  --card-bg: #fbfaf8; --error: #b3261e; --warn-bg: color-mix(in srgb, #c47a5a 12%, var(--card-bg));
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; --error: #ff6b60; }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--bg); color: var(--fg);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  padding: 2rem 1.2rem;
+}
+.card {
+  width: 100%; max-width: 440px; background: var(--card-bg); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 1.8em 1.6em 1.6em;
+}
+.brand {
+  display: flex; align-items: center; gap: 0.65em; margin-bottom: 1.4em;
+  font-weight: 600; font-size: 1.05em; line-height: 1.25;
+}
+.brand svg { width: 2.6em; height: 2.6em; flex-shrink: 0; }
+h1 { font-size: 1.25em; margin: 0 0 0.35em; }
+.lede { color: var(--muted); font-size: 0.92em; line-height: 1.5; margin: 0 0 1.3em; }
+.primary-btn, .secondary-btn {
+  width: 100%; padding: 0.75em 1em; border-radius: 8px; font-size: 0.95em; font-weight: 600; cursor: pointer;
+}
+.primary-btn {
+  border: none; background: var(--fg); color: var(--bg);
+}
+.primary-btn:hover { opacity: 0.9; }
+.primary-btn:disabled { opacity: 0.55; cursor: default; }
+.secondary-btn {
+  margin-top: 0.55em; border: 1px solid var(--rule); background: transparent; color: var(--fg);
+}
+.secondary-btn:hover { background: var(--rule); }
+.error { color: var(--error); font-size: 0.88em; margin-top: 0.85em; min-height: 1.3em; }
+.warn {
+  background: var(--warn-bg); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 0.85em 1em; font-size: 0.88em; line-height: 1.5; margin: 0 0 1em; color: var(--fg);
+}
+.key-box {
+  border: 1px solid var(--rule); border-radius: 8px; background: var(--bg);
+  padding: 0.85em 1em; margin-bottom: 0.75em;
+}
+.key-label { font-size: 0.78em; font-weight: 600; color: var(--muted); margin-bottom: 0.45em; text-transform: uppercase; letter-spacing: 0.04em; }
+.key-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em; line-height: 1.5; word-break: break-all; user-select: all;
+}
+.key-actions { display: flex; gap: 0.5em; margin-top: 0.75em; }
+.key-actions button {
+  flex: 1; padding: 0.45em 0.6em; border-radius: 6px; border: 1px solid var(--rule);
+  background: var(--card-bg); color: var(--fg); font-size: 0.82em; cursor: pointer;
+}
+.key-actions button:hover { background: var(--rule); }
+.switch { margin-top: 1.1em; font-size: 0.88em; color: var(--muted); text-align: center; }
+.switch a { color: var(--accent); text-decoration: none; }
+.switch a:hover { text-decoration: underline; }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true" focusable="false">
+      <path fill="#c47a5a" d="M9.5 19.2h13l-1.55 9.1c-.15.9-.9 1.55-1.8 1.55h-6.3c-.9 0-1.65-.65-1.8-1.55L9.5 19.2z"/>
+      <ellipse fill="#4a3728" cx="16" cy="19.1" rx="6.6" ry="2.15"/>
+      <path fill="none" stroke="#3a6b4f" stroke-width="1.7" stroke-linecap="round" d="M16 19.1c0-3.2.15-6.4.1-9.5"/>
+      <ellipse fill="#4fa882" cx="10.8" cy="12.2" rx="5.1" ry="2.55" transform="rotate(-42 10.8 12.2)"/>
+      <ellipse fill="#3d8b6e" cx="21.2" cy="11.6" rx="5.1" ry="2.55" transform="rotate(40 21.2 11.6)"/>
+      <ellipse fill="#2f6f56" cx="16" cy="6.6" rx="3.35" ry="5.1"/>
+    </svg>
+    <span>Andrew&rsquo;s Paper Library</span>
+  </div>
+
+  <div id="stepCreate">
+    <h1>Create account</h1>
+    <p class="lede">Generate an anonymous secret key, or sign in with one you already saved. Each key unlocks its own encrypted vault; a new key starts empty and does not replace an existing vault.</p>
+    <button type="button" class="primary-btn" id="generateBtn">Generate secret key</button>
+    <div class="error" id="createError" aria-live="polite"></div>
+    <div class="switch">Already have a key? <a id="signInLink" href="/login">Sign in</a></div>
+  </div>
+
+  <div id="stepReveal" hidden>
+    <h1>Save your secret key</h1>
+    <div class="warn">
+      This key is shown <strong>once</strong>. It is not stored in plaintext and cannot be recovered.
+      If you lose it, you lose access to this library account permanently.
+    </div>
+    <div class="key-box">
+      <div class="key-label">Your secret key</div>
+      <div class="key-value" id="keyValue" data-hidden="1">••••••••••••••••••••••••••••••••</div>
+      <div class="key-actions">
+        <button type="button" id="toggleKeyBtn">Show</button>
+        <button type="button" id="copyKeyBtn">Copy</button>
+      </div>
+    </div>
+    <button type="button" class="primary-btn" id="continueBtn">I&rsquo;ve saved it &mdash; continue</button>
+    <div class="error" id="revealError" aria-live="polite"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var stepCreate = document.getElementById("stepCreate");
+  var stepReveal = document.getElementById("stepReveal");
+  var generateBtn = document.getElementById("generateBtn");
+  var createError = document.getElementById("createError");
+  var revealError = document.getElementById("revealError");
+  var keyValue = document.getElementById("keyValue");
+  var toggleBtn = document.getElementById("toggleKeyBtn");
+  var copyBtn = document.getElementById("copyKeyBtn");
+  var continueBtn = document.getElementById("continueBtn");
+  var secretKey = "";
+  var params = new URLSearchParams(window.location.search);
+  var next = params.get("next") || "/";
+  if (!next.startsWith("/") || next.startsWith("//")) next = "/";
+  var signInLink = document.getElementById("signInLink");
+  if (signInLink) signInLink.href = "/login?next=" + encodeURIComponent(next);
+
+  function mask(s) {
+    return "•".repeat(Math.min(40, Math.max(24, s.length)));
+  }
+
+  function renderKey() {
+    var hidden = keyValue.getAttribute("data-hidden") === "1";
+    keyValue.textContent = hidden ? mask(secretKey) : secretKey;
+    toggleBtn.textContent = hidden ? "Show" : "Hide";
+  }
+
+  generateBtn.addEventListener("click", function () {
+    createError.textContent = "";
+    generateBtn.disabled = true;
+    fetch("/api/signup", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }).then(function (r) {
+      return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        createError.textContent = res.data.error || "Could not create account";
+        generateBtn.disabled = false;
+        return;
+      }
+      secretKey = res.data.secretKey || "";
+      if (!secretKey) {
+        createError.textContent = "Server did not return a secret key";
+        generateBtn.disabled = false;
+        return;
+      }
+      keyValue.setAttribute("data-hidden", "1");
+      renderKey();
+      stepCreate.hidden = true;
+      stepReveal.hidden = false;
+    }).catch(function () {
+      createError.textContent = "Could not reach the server";
+      generateBtn.disabled = false;
+    });
+  });
+
+  toggleBtn.addEventListener("click", function () {
+    var hidden = keyValue.getAttribute("data-hidden") === "1";
+    keyValue.setAttribute("data-hidden", hidden ? "0" : "1");
+    renderKey();
+  });
+
+  copyBtn.addEventListener("click", function () {
+    revealError.textContent = "";
+    if (!secretKey) return;
+    function ok() {
+      copyBtn.textContent = "Copied";
+      setTimeout(function () { copyBtn.textContent = "Copy"; }, 1500);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(secretKey).then(ok).catch(function () {
+        revealError.textContent = "Could not copy — use Show and select the key";
+      });
+    } else {
+      revealError.textContent = "Could not copy — use Show and select the key";
+    }
+  });
+
+  continueBtn.addEventListener("click", function () {
+    window.location.replace(next);
+  });
+})();
+</script>
+</body>
+</html>
+"""
+
+AUTH_EXPORT_HTML = """
+        <div class="prefs-popover-label" style="margin-top: 0.6em;">Library</div>
+        <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.45em; padding-bottom: 0.2em;">
+          <div style="font-size: 0.78em; color: var(--muted); line-height: 1.45;">
+            Download a plaintext ZIP of your unlocked papers (HTML + index).
+          </div>
+          <button type="button" class="prefs-btn" id="prefsExportBtn" style="width: 100%;">Export library</button>
+        </div>
+"""
+
+AUTH_LOGOUT_HTML = AUTH_EXPORT_HTML + """
+        <div class="prefs-popover-label" style="margin-top: 0.6em;">Account</div>
+        <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.45em; padding-bottom: 0.2em;">
+          <div style="font-size: 0.78em; color: var(--muted); line-height: 1.45;">
+            Anonymous secret-key vault. Papers are encrypted at rest; the key is never stored in plaintext and cannot be recovered if lost.
+          </div>
+          <button type="button" class="prefs-btn" id="prefsLogoutBtn" style="width: 100%;">Log out</button>
+        </div>
+"""
+
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "PaperReaderLibrary/1.0"
 
-    def _send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        # Papers get tagged/moved/opened from other tabs and pages all the
-        # time -- never let the browser serve a stale cached copy of the
-        # library index, the home page, or a reader page.
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+    def _send_bytes(
+        self,
+        body: bytes,
+        content_type: str,
+        status: int = 200,
+        extra_headers: Optional[list[tuple[str, str]]] = None,
+    ) -> None:
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            # Papers get tagged/moved/opened from other tabs and pages all the
+            # time -- never let the browser serve a stale cached copy of the
+            # library index, the home page, or a reader page.
+            self.send_header("Cache-Control", "no-store")
+            if extra_headers:
+                for key, value in extra_headers:
+                    self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Client navigated away / aborted — normal, must not tear down the server.
+            return
+        except OSError as e:
+            if getattr(e, "errno", None) in (32, 54, 104):  # EPIPE / ECONNRESET-ish
+                return
+            raise
 
-    def _send_json(self, obj, status: int = 200) -> None:
-        self._send_bytes(json.dumps(obj).encode("utf-8"), "application/json", status)
+    def _send_json(
+        self,
+        obj,
+        status: int = 200,
+        extra_headers: Optional[list[tuple[str, str]]] = None,
+    ) -> None:
+        self._send_bytes(
+            json.dumps(obj).encode("utf-8"),
+            "application/json",
+            status,
+            extra_headers=extra_headers,
+        )
 
     def _send_html(self, html_str: str, status: int = 200) -> None:
         self._send_bytes(html_str.encode("utf-8"), "text/html; charset=utf-8", status)
 
+    def _home_html(self) -> str:
+        from .palette import get_palette_html
+
+        html_out = HOME_PAGE_HTML.replace("</body>", get_palette_html("home") + "</body>")
+        if _auth_enabled():
+            html_out = html_out.replace("<!--AUTH_LOGOUT_SLOT-->", AUTH_LOGOUT_HTML)
+        else:
+            html_out = html_out.replace("<!--AUTH_LOGOUT_SLOT-->", AUTH_EXPORT_HTML)
+        return html_out
+
+    def _redirect(self, location: str, status: int = 302) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def _safe_next(self, raw: Optional[str]) -> str:
+        nxt = raw or "/"
+        if not nxt.startswith("/") or nxt.startswith("//"):
+            return "/"
+        return nxt
+
+    def _require_auth(self) -> bool:
+        """Return True if the request may proceed. On failure, response is sent."""
+        vault = _bind_vault_from_request(self)
+        if not _auth_enabled():
+            return True
+        path = urlparse(self.path).path
+        public = (
+            "/login", "/signup",
+            "/api/login", "/api/signup", "/api/logout",
+        )
+        if path in public:
+            return True
+        if vault is not None:
+            return True
+        if path.startswith("/api/"):
+            self._send_json({"error": "unauthorized"}, 401)
+            return False
+        next_url = self.path if self.path.startswith("/") else "/"
+        entry = _auth_entry_path()
+        loc = entry + "?next=" + urllib.parse.quote(next_url, safe="")
+        self._redirect(loc)
+        return False
+
+    def _serve_auth_page(self, kind: str) -> None:
+        """Serve login or signup, or bounce if already signed in."""
+        if not _auth_enabled():
+            self._redirect("/")
+            return
+        qs = parse_qs(urlparse(self.path).query)
+        nxt = self._safe_next((qs.get("next") or [None])[0])
+        if _bind_vault_from_request(self) is not None:
+            self._redirect(nxt)
+            return
+        if kind == "signup":
+            self._send_html(SIGNUP_PAGE_HTML)
+            return
+        self._send_html(LOGIN_PAGE_HTML)
+
     def do_GET(self) -> None:  # noqa: N802 (stdlib method name)
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
-        if parsed.path == "/":
-            from .palette import get_palette_html
-            self._send_html(HOME_PAGE_HTML.replace('</body>', get_palette_html('home') + '</body>'))
+        if parsed.path == "/login":
+            self._serve_auth_page("login")
+        elif parsed.path == "/signup":
+            self._serve_auth_page("signup")
+        elif parsed.path == "/":
+            self._send_html(self._home_html())
         elif parsed.path == "/about":
             self._send_html(ABOUT_PAGE_HTML)
         elif parsed.path == "/guide":
@@ -2959,13 +4255,39 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(_load_index())
         elif parsed.path == "/api/pipeline-status":
             self._send_json(_list_jobs())
+        elif parsed.path == "/api/export":
+            self._handle_export()
+        elif parsed.path == "/api/account":
+            self._handle_account_get()
+        elif parsed.path == "/api/account/avatar":
+            self._handle_account_avatar_get()
         elif parsed.path.startswith("/library/"):
             self._serve_library_file(parsed.path[len("/library/") :])
         else:
             self._send_html("<h1>404</h1>", 404)
 
     def do_POST(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/signup":
+            self._handle_signup()
+            return
+        if parsed.path == "/api/login":
+            self._handle_login()
+            return
+        if parsed.path == "/api/logout":
+            cookies = _parse_cookies(self.headers.get("Cookie", ""))
+            _clear_session(cookies.get(SESSION_COOKIE, ""))
+            _set_current_vault(None)
+            self._send_json({"ok": True}, extra_headers=[("Set-Cookie", _session_clear_cookie())])
+            return
+        if parsed.path == "/api/account":
+            self._handle_account_post()
+            return
+        if parsed.path == "/api/account/avatar":
+            self._handle_account_avatar_post()
+            return
         if parsed.path == "/api/upload":
             self._handle_upload(parsed)
 
@@ -3025,8 +4347,167 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
+    def _handle_signup(self) -> None:
+        if not _auth_enabled():
+            self._send_json({"error": "authentication is disabled"}, 400)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                pass
+        try:
+            secret_key, account = _create_account()
+            vault = _unlock_vault_for_account(secret_key, account)
+        except (ValueError, OSError) as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        token = _make_session(account["id"], vault)
+        _set_current_vault(vault)
+        threading.Thread(target=rebuild_library, kwargs={"vault": vault, "quiet": True}, daemon=True).start()
+        self._send_json(
+            {"ok": True, "secretKey": secret_key},
+            extra_headers=[("Set-Cookie", _session_set_cookie(token))],
+        )
+
+    def _handle_login(self) -> None:
+        if not _auth_enabled():
+            self._send_json({"error": "authentication is disabled"}, 400)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json({"error": "invalid JSON body"}, 400)
+            return
+        secret_key = body.get("secretKey") if isinstance(body.get("secretKey"), str) else ""
+        account = _find_account_for_key(secret_key)
+        if account is None:
+            self._send_json({"error": "invalid secret key"}, 401)
+            return
+        try:
+            vault = _unlock_vault_for_account(secret_key, account)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        token = _make_session(account["id"], vault)
+        _set_current_vault(vault)
+        threading.Thread(target=rebuild_library, kwargs={"vault": vault, "quiet": True}, daemon=True).start()
+        self._send_json({"ok": True}, extra_headers=[("Set-Cookie", _session_set_cookie(token))])
+
+    def _handle_export(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        try:
+            data = vault.export_zip_bytes()
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+            return
+        self._send_bytes(
+            data,
+            "application/zip",
+            extra_headers=[
+                ("Content-Disposition", 'attachment; filename="paper-library-export.zip"'),
+            ],
+        )
+
+    def _handle_account_get(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        self._send_json(_account_public_payload(vault))
+
+    def _handle_account_post(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            body = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json({"error": "invalid json"}, 400)
+            return
+        if not isinstance(body, dict):
+            self._send_json({"error": "invalid json"}, 400)
+            return
+        if "displayName" not in body:
+            self._send_json({"error": "displayName is required"}, 400)
+            return
+        profile = _save_profile(vault, body.get("displayName"))
+        self._send_json({
+            "ok": True,
+            "displayName": profile["displayName"],
+            "hasAvatar": _avatar_path(vault).is_file(),
+        })
+
+    def _handle_account_avatar_get(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        path = _avatar_path(vault)
+        if not path.is_file():
+            self._send_json({"error": "not found"}, 404)
+            return
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            self._send_json({"error": str(e)}, 500)
+            return
+        self._send_bytes(data, "image/jpeg")
+
+    def _handle_account_avatar_post(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            self._send_json({"error": "empty body"}, 400)
+            return
+        if length > _MAX_AVATAR_BYTES:
+            self._send_json({"error": "image too large"}, 400)
+            return
+        ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype not in ("image/jpeg", "image/jpg"):
+            self._send_json({"error": "expected image/jpeg"}, 400)
+            return
+        data = self.rfile.read(length)
+        if not (len(data) >= 3 and data[0] == 0xFF and data[1] == 0xD8 and data[2] == 0xFF):
+            self._send_json({"error": "invalid jpeg"}, 400)
+            return
+        path = _avatar_path(vault)
+        try:
+            from .vault import _atomic_write_bytes
+
+            _atomic_write_bytes(path, data)
+        except OSError as e:
+            self._send_json({"error": str(e)}, 500)
+            return
+        self._send_json({"ok": True, "hasAvatar": True})
+
+    def _handle_account_avatar_delete(self) -> None:
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        path = _avatar_path(vault)
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as e:
+            self._send_json({"error": str(e)}, 500)
+            return
+        self._send_json({"ok": True, "hasAvatar": False})
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/papers/"):
             paper_id = os.path.basename(parsed.path[len("/api/papers/") :])
@@ -3045,7 +4526,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
+        if parsed.path == "/api/account/avatar":
+            self._handle_account_avatar_delete()
+            return
         if parsed.path.startswith("/api/papers/"):
             paper_id = os.path.basename(parsed.path[len("/api/papers/") :])
             if _delete_paper(paper_id):
@@ -3056,6 +4542,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_PUT(self) -> None:  # noqa: N802
+        if not self._require_auth():
+            return
         parsed = urlparse(self.path)
         if parsed.path.startswith("/api/papers/") and parsed.path.endswith("/tags"):
             paper_id = os.path.basename(parsed.path[len("/api/papers/") : -len("/tags")])
@@ -3094,17 +4582,43 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
+    def _inject_reader_profile(self, html_body: str, vault: Vault) -> str:
+        """Stamp the signed-in display name / avatar flag into reader pages."""
+        profile = _account_public_payload(vault)
+        snippet = (
+            "<script>window.__paperReaderProfile="
+            + json.dumps(profile, separators=(",", ":"))
+            + ";</script>\n"
+        )
+        lower = html_body.lower()
+        idx = lower.rfind("</head>")
+        if idx != -1:
+            return html_body[:idx] + snippet + html_body[idx:]
+        idx = lower.rfind("<body")
+        if idx != -1:
+            # Insert right after the opening <body...> tag.
+            gt = html_body.find(">", idx)
+            if gt != -1:
+                return html_body[: gt + 1] + "\n" + snippet + html_body[gt + 1 :]
+        return snippet + html_body
+
     def _serve_library_file(self, name: str) -> None:
         safe_name = os.path.basename(name)  # no path traversal
         if not safe_name.endswith(".html"):
             self._send_html("<h1>404</h1>", 404)
             return
-        path = LIBRARY_DIR / safe_name
-        if not path.is_file():
+        vault = _current_vault()
+        if vault is None:
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+        paper_id = safe_name[: -len(".html")]
+        html_body = vault.read_html(paper_id)
+        if html_body is None:
             self._send_html("<h1>404</h1>", 404)
             return
-        _touch_opened(safe_name[: -len(".html")])
-        self._send_bytes(path.read_bytes(), "text/html; charset=utf-8")
+        _touch_opened(paper_id, vault)
+        html_body = self._inject_reader_profile(html_body, vault)
+        self._send_bytes(html_body.encode("utf-8"), "text/html; charset=utf-8")
 
     def _handle_upload(self, parsed) -> None:
         qs = parse_qs(parsed.query)
@@ -3141,11 +4655,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def is_server_running(host: str = "127.0.0.1", port: int = 8765) -> bool:
-    url = f"http://{host}:{port}/api/papers"
+    """True if something accepts HTTP on host:port (auth may return 401/302)."""
+    url = f"http://{host}:{port}/signup"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "paper-reader-cli"})
         with urllib.request.urlopen(req, timeout=1.0) as resp:
-            return resp.status == 200
+            return 200 <= resp.status < 500
+    except urllib.error.HTTPError as e:
+        return 200 <= e.code < 500
     except Exception:
         return False
 
@@ -3182,6 +4699,12 @@ def run(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) ->
         server = ThreadingHTTPServer((host, port), Handler)
         url = f"http://{host}:{port}/"
         print(f"Andrew's Paper Library running at {url}  (library stored in {LIBRARY_DIR})")
+        if not _auth_enabled():
+            print("Authentication disabled (PAPER_READER_DISABLE_AUTH is set); local vault auto-unlocked.")
+        elif not _account_exists():
+            print("No account yet — open the library to create a secret-key vault.")
+        else:
+            print("Authentication required (sign in to unlock your encrypted vault).")
         print("Press Ctrl+C to stop.")
 
         # Rebuild library asynchronously so server startup is immediate
