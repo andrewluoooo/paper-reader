@@ -1,15 +1,15 @@
 """
-Pre-rasterize TikZ pictures that LaTeXML cannot render.
+Pre-rasterize TikZ pictures that LaTeXML cannot render faithfully.
 
-LaTeXML's pgfplots binding loads the ``.sty`` but fails to pull in the
-``.code.tex`` implementation tree, leaving ``{axis}``/``\\addplot``
-undefined and emitting empty 1×1 SVGs. Real ``pdflatex`` handles those
-plots fine, so we extract each plot-bearing ``tikzpicture``, compile it
-to a cropped PNG, and replace the environment with ``\\includegraphics``.
+LaTeXML often mangles non-trivial TikZ: pgfplots may emit empty SVGs, and
+architecture / block diagrams can end up with wrong scale, position, and
+z-order (labels overlapping body text). Real ``pdflatex`` renders those
+pictures correctly, so we extract each substantial ``tikzpicture`` (and
+``\\input{….tikz}`` files), compile to a cropped PNG, and replace the
+source with ``\\includegraphics``.
 
-Circuit diagrams that LaTeXML *can* render (via ``local_sty_patch``'s
-InputDefinitions shims for vendored packages like ``circuitikzgit``) are
-left alone -- only pictures that look like pgfplots get this treatment.
+Tiny inline decorations (short pictures without plots) are left for
+LaTeXML when possible.
 """
 
 from __future__ import annotations
@@ -29,13 +29,43 @@ _PLOT_MARKERS = (
 )
 _PLOT_RE = re.compile("|".join(_PLOT_MARKERS))
 
+_DRAW_RE = re.compile(
+    r"\\(?:node|draw|path|fill|pic\b|matrix|addplot)|"
+    r"\\begin\{(?:axis|semilogyaxis|loglogaxis|semilogxaxis)\}"
+)
+
 _BEGIN_TIKZ_RE = re.compile(r"\\begin\{tikzpicture\}(\s*\[[^\]]*\])?")
 _END_TIKZ = r"\end{tikzpicture}"
 
+_INPUT_TIKZ_RE = re.compile(
+    r"\\input\s*\{([^}]+\.tikz)\}",
+    re.IGNORECASE,
+)
+
 _USEPACKAGE_RE = re.compile(
-    r"\\usepackage(?:\s*\[[^\]]*\])?\s*\{[^}]+\}"
+    r"\\usepackage(?:\s*\[[^\]]*\])?\s*\{([^}]+)\}"
 )
 _USETIKZLIB_RE = re.compile(r"\\usetikzlibrary\s*\{[^}]+\}")
+_USEPGFPLOTSLIB_RE = re.compile(r"\\usepgfplotslibrary\s*\{[^}]+\}")
+
+# Packages from the paper preamble that help TikZ compile, when installed.
+_TIKZ_RELATED_PKGS = frozenset({
+    "circuitikz",
+    "tkz-euclide",
+    "tkz-base",
+    "pgf-pie",
+    "forest",
+    "tikz-cd",
+    "tikz-3dplot",
+    "smartdiagram",
+    "pgfplots",
+    "pgfplotstable",
+    "xcolor",
+    "amsmath",
+    "amssymb",
+    "amsfonts",
+    "babel",
+})
 
 
 def _extract_brace_group(text: str, open_idx: int) -> str | None:
@@ -74,9 +104,39 @@ def _find_pgfplotssets(text: str) -> list[str]:
     return out
 
 
-
 def _find_pdflatex() -> str | None:
     return shutil.which("pdflatex")
+
+
+def _pkg_available(name: str, work_dir: Path) -> bool:
+    if (work_dir / f"{name}.sty").is_file():
+        return True
+    kpsewhich = shutil.which("kpsewhich")
+    if not kpsewhich:
+        return False
+    try:
+        r = subprocess.run(
+            [kpsewhich, f"{name}.sty"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(r.stdout.strip())
+
+
+def _should_rasterize(body: str) -> bool:
+    """True for plots and non-trivial diagrams; false for tiny decorations."""
+    if _PLOT_RE.search(body):
+        return True
+    compact = re.sub(r"\s+", " ", body).strip()
+    if len(compact) < 250:
+        return False
+    if not _DRAW_RE.search(body):
+        return False
+    # Architecture / block diagrams: many commands or multi-line layout.
+    if body.count("\\") >= 10 or body.count("\n") >= 6:
+        return True
+    return len(compact) >= 600
 
 
 def _extract_balanced_env(text: str, begin_match: re.Match) -> tuple[int, int, str] | None:
@@ -119,7 +179,6 @@ def _harvest_preamble(main_tex: Path) -> str:
     # Local .sty files the paper ships (colorblind, circuitikzgit, ...)
     for sty in sorted(work_dir.glob("*.sty")):
         pkg = sty.name[: -len(".sty")]
-        # Detect option from an existing \usepackage[opts]{pkg} if present
         opt_m = re.search(
             rf"\\usepackage\s*\[([^\]]*)\]\s*\{{{re.escape(pkg)}\}}",
             preamble,
@@ -129,7 +188,31 @@ def _harvest_preamble(main_tex: Path) -> str:
         else:
             lines.append(f"\\usepackage{{{pkg}}}")
 
+    for m in _USEPACKAGE_RE.finditer(preamble):
+        for pkg in (p.strip() for p in m.group(1).split(",")):
+            if pkg not in _TIKZ_RELATED_PKGS:
+                continue
+            if pkg in {"amsmath", "xcolor", "tikz", "pgfplots", "pgfplotstable"}:
+                continue
+            if not _pkg_available(pkg, work_dir):
+                continue
+            opt_m = re.search(
+                rf"\\usepackage\s*\[([^\]]*)\]\s*\{{{re.escape(pkg)}\}}",
+                preamble,
+            )
+            line = (
+                f"\\usepackage[{opt_m.group(1)}]{{{pkg}}}"
+                if opt_m
+                else f"\\usepackage{{{pkg}}}"
+            )
+            if line not in lines:
+                lines.append(line)
+
     for m in _USETIKZLIB_RE.finditer(preamble):
+        line = m.group(0)
+        if line not in lines:
+            lines.append(line)
+    for m in _USEPGFPLOTSLIB_RE.finditer(preamble):
         line = m.group(0)
         if line not in lines:
             lines.append(line)
@@ -176,6 +259,31 @@ def _trim_png(png_path: Path) -> None:
     )).save(png_path)
 
 
+def _geometry_for(body: str) -> str:
+    """Large canvases for Huge architecture diagrams; compact for plots."""
+    large = (
+        len(body) > 1500
+        or bool(re.search(r"\\Huge|\\huge", body))
+        or bool(re.search(r"minimum width=\d", body))
+    )
+    if large:
+        return r"\usepackage[margin=0.4cm,paperwidth=50cm,paperheight=50cm]{geometry}"
+    return r"\usepackage[margin=0.4cm,paperwidth=20cm,paperheight=20cm]{geometry}"
+
+
+def _includegraphics_cmd(png_rel: Path, body: str) -> str:
+    # Plots are usually wider than tall; block diagrams may be taller.
+    if _PLOT_RE.search(body):
+        return (
+            f"\\includegraphics[width=\\linewidth,height=0.35\\textheight,"
+            f"keepaspectratio]{{{png_rel.as_posix()}}}"
+        )
+    return (
+        f"\\includegraphics[width=\\linewidth,height=0.55\\textheight,"
+        f"keepaspectratio]{{{png_rel.as_posix()}}}"
+    )
+
+
 def _compile_snippet(
     work_dir: Path,
     snippet_id: int,
@@ -183,8 +291,8 @@ def _compile_snippet(
     preamble_pkgs: str,
     relative_dir: Path,
 ) -> Path | None:
-    """Compile one tikzpicture to PNG; return path relative to work_dir's
-    parent search root (main tex dir), or None on failure."""
+    """Compile one tikzpicture to PNG; return path relative to work_dir, or None."""
+    del relative_dir  # reserved for future path rewriting
     pdflatex = _find_pdflatex()
     pdftoppm = shutil.which("pdftoppm")
     if not pdflatex or not pdftoppm:
@@ -201,7 +309,7 @@ def _compile_snippet(
     # -output-directory.
     tex_path.write_text(
         "\\documentclass{article}\n"
-        "\\usepackage[margin=0.4cm,paperwidth=20cm,paperheight=20cm]{geometry}\n"
+        f"{_geometry_for(body)}\n"
         "\\pagestyle{empty}\n"
         f"{preamble_pkgs}\n"
         "\\begin{document}\n"
@@ -241,7 +349,6 @@ def _compile_snippet(
     if not png.is_file():
         return None
     _trim_png(png)
-    # Path as the main .tex will see it (relative to work_dir)
     return Path("pr_tikz_raster") / f"{stem}.png"
 
 
@@ -252,8 +359,101 @@ def _file_local_pgfplotssets(text: str, before: int) -> str:
     return "\n".join(_find_pgfplotssets(text[:before]))
 
 
+def _resolve_input_path(work_dir: Path, tex_file: Path, rel: str) -> Path | None:
+    rel = rel.strip().replace("\\", "/")
+    candidates = [
+        tex_file.parent / rel,
+        work_dir / rel,
+    ]
+    for c in candidates:
+        try:
+            resolved = c.resolve()
+        except OSError:
+            continue
+        if resolved.is_file():
+            return resolved
+    return None
+
+
+def _patch_tex_file(
+    work_dir: Path,
+    tex_file: Path,
+    preamble: str,
+    snippet_id_start: int,
+) -> tuple[int, int]:
+    """Patch one .tex file. Returns (rasterized_count, next_snippet_id)."""
+    text = tex_file.read_text(encoding="utf-8", errors="ignore")
+    if not (_BEGIN_TIKZ_RE.search(text) or _INPUT_TIKZ_RE.search(text)):
+        return 0, snippet_id_start
+
+    # Collect replacements as (start, end, body_for_compile, kind)
+    # kind is 'env' or 'input'; body is the tikz source to compile.
+    jobs: list[tuple[int, int, str]] = []
+
+    for m in _INPUT_TIKZ_RE.finditer(text):
+        path = _resolve_input_path(work_dir, tex_file, m.group(1))
+        if path is None:
+            continue
+        body = path.read_text(encoding="utf-8", errors="ignore")
+        if not _should_rasterize(body):
+            continue
+        jobs.append((m.start(), m.end(), body))
+
+    for begin in _BEGIN_TIKZ_RE.finditer(text):
+        extracted = _extract_balanced_env(text, begin)
+        if not extracted:
+            continue
+        start, end, body = extracted
+        if not _should_rasterize(body):
+            continue
+        # Skip if this span is inside an already-scheduled \\input span
+        # (shouldn't happen — inputs are external files).
+        jobs.append((start, end, body))
+
+    if not jobs:
+        return 0, snippet_id_start
+
+    # Drop overlapping jobs (prefer earlier / longer).
+    jobs.sort(key=lambda j: (j[0], -(j[1] - j[0])))
+    filtered: list[tuple[int, int, str]] = []
+    last_end = -1
+    for start, end, body in jobs:
+        if start < last_end:
+            continue
+        filtered.append((start, end, body))
+        last_end = end
+    jobs = filtered
+
+    out: list[str] = []
+    pos = 0
+    count = 0
+    snippet_id = snippet_id_start
+    changed = False
+
+    for start, end, body in jobs:
+        out.append(text[pos:start])
+        snippet_id += 1
+        local_sets = _file_local_pgfplotssets(text, start)
+        body_with_styles = f"{local_sets}\n{body}" if local_sets else body
+        png_rel = _compile_snippet(
+            work_dir, snippet_id, body_with_styles, preamble, tex_file.parent
+        )
+        if png_rel is not None:
+            out.append(_includegraphics_cmd(png_rel, body))
+            count += 1
+            changed = True
+        else:
+            out.append(text[start:end])
+        pos = end
+
+    out.append(text[pos:])
+    if changed:
+        tex_file.write_text("".join(out), encoding="utf-8")
+    return count, snippet_id
+
+
 def patch_source_tree(work_dir: Path, main_tex: Path | None = None) -> int:
-    """Replace plot-bearing tikzpictures under ``work_dir`` with PNGs.
+    """Replace substantial TikZ under ``work_dir`` with PNGs.
     Returns the number of pictures successfully rasterized."""
     if main_tex is None:
         mains = list(work_dir.glob("*.tex"))
@@ -274,41 +474,7 @@ def patch_source_tree(work_dir: Path, main_tex: Path | None = None) -> int:
     for tex_file in sorted(work_dir.rglob("*.tex")):
         if "pr_tikz_raster" in tex_file.parts:
             continue
-        text = tex_file.read_text(encoding="utf-8", errors="ignore")
-        if not _PLOT_RE.search(text):
-            continue
-
-        out: list[str] = []
-        pos = 0
-        changed = False
-        for begin in _BEGIN_TIKZ_RE.finditer(text):
-            if begin.start() < pos:
-                continue
-            extracted = _extract_balanced_env(text, begin)
-            if not extracted:
-                continue
-            start, end, body = extracted
-            if not _PLOT_RE.search(body):
-                continue
-            out.append(text[pos:start])
-            snippet_id += 1
-            local_sets = _file_local_pgfplotssets(text, start)
-            body_with_styles = f"{local_sets}\n{body}" if local_sets else body
-            png_rel = _compile_snippet(
-                work_dir, snippet_id, body_with_styles, preamble, tex_file.parent
-            )
-            if png_rel is not None:
-                out.append(
-                    f"\\includegraphics[width=\\linewidth,height=0.35\\textheight,"
-                    f"keepaspectratio]{{{png_rel.as_posix()}}}"
-                )
-                count += 1
-                changed = True
-            else:
-                out.append(body)
-            pos = end
-        out.append(text[pos:])
-        if changed:
-            tex_file.write_text("".join(out), encoding="utf-8")
+        n, snippet_id = _patch_tex_file(work_dir, tex_file, preamble, snippet_id)
+        count += n
 
     return count

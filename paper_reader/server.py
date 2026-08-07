@@ -497,7 +497,13 @@ def _save_index(items: list[dict], vault: Optional[Vault] = None) -> None:
     v.save_index(items)
 
 
-def _process_upload(filename: str, data: bytes, vault: Optional[Vault] = None) -> dict:
+def _process_upload(
+    filename: str,
+    data: bytes,
+    vault: Optional[Vault] = None,
+    pdf_parser: str = "docling",
+    mineru_token: str = "",
+) -> dict:
     """Run the same convert()+restyle() pipeline the CLI uses, encrypt into
     the unlocked vault, and return its index entry."""
     v = vault or _require_vault()
@@ -523,7 +529,13 @@ def _process_upload(filename: str, data: bytes, vault: Optional[Vault] = None) -
             if is_html_source:
                 raw_html_path = convert_html(str(upload_path), str(raw_workdir))
             elif is_pdf_source:
-                raw_html_path = convert_pdf(str(upload_path), str(raw_workdir))
+                raw_html_path = convert_pdf(
+                    str(upload_path),
+                    str(raw_workdir),
+                    backend=pdf_parser,
+                    mineru_token=mineru_token or None,
+                    on_stage=lambda s: _job_stage(job_id, s),
+                )
             elif is_epub_source:
                 raw_html_path = convert_epub(str(upload_path), str(raw_workdir))
             else:
@@ -934,18 +946,52 @@ html.library-sidebar-collapsed .sidebar {
 .sidebar-footer a:hover { color: var(--accent); }
 .footer-sep { color: var(--rule); }
 
-.prefs-popover {
-  position: absolute; left: 0; bottom: 100%; margin-bottom: 0.4em; z-index: 400;
-  width: 220px; background: var(--card-bg); border: 1px solid var(--rule);
-  border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18); padding: 0.7em;
+.prefs-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2em;
+  box-sizing: border-box;
 }
-.prefs-popover[hidden] { display: none; }
+.prefs-overlay[hidden] { display: none; }
+.prefs-modal {
+  width: min(90vw, 420px);
+  max-height: calc(100vh - 2.4em);
+  max-height: calc(100dvh - 2.4em);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  box-sizing: border-box;
+  background: var(--control-bg, var(--bg));
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  padding: 1.5em;
+  display: flex; flex-direction: column;
+  min-width: 0;
+}
+.prefs-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 1em; padding-bottom: 0.5em; border-bottom: 1px solid var(--rule);
+}
+.prefs-modal-header h2 {
+  margin: 0; font-size: 1.2em; font-weight: 600;
+}
+.prefs-modal-close {
+  background: none; border: none; font-size: 1.5em; line-height: 1; cursor: pointer; color: var(--muted);
+}
+.prefs-modal-close:hover { color: var(--fg); }
 .prefs-popover-label {
   font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.04em;
-  color: var(--muted); margin: 0.3em 0.4em;
+  color: var(--muted); margin: 1em 0 0.4em 0;
 }
-.prefs-popover-row { display: flex; align-items: center; justify-content: space-between; padding: 0.35em 0.4em 0.55em; }
-.prefs-theme-grid { display: flex; gap: 0.3em; padding: 0 0.4em 0.5em; }
+.prefs-popover-row { display: flex; align-items: center; justify-content: space-between; padding: 0.35em 0 0.55em 0; }
+.prefs-theme-grid { display: flex; gap: 0.6em; padding: 0 0 0.5em 0; }
 .prefs-theme-grid button {
   flex: 1; padding: 0.4em 0; border-radius: 7px; border: 1px solid var(--rule);
   background: var(--bg); color: var(--fg); font-size: 0.78em; cursor: pointer;
@@ -1445,36 +1491,7 @@ input[type=file] { display: none; }
       <button type="button" class="nav-item" id="navAccountBtn">Account</button>
       <button type="button" class="nav-item" id="navSearchBtn" title="Search papers (/)">Search</button>
       <button type="button" class="nav-item" id="navPrefsBtn">Preferences <span class="nav-item-sub" id="prefsThemeLabel">Auto</span></button>
-      <div class="prefs-popover" id="prefsPopover" hidden>
-        <div class="prefs-popover-label">Theme</div>
-        <div class="prefs-theme-grid" id="prefsThemeGrid">
-          <button type="button" data-value="auto">Auto</button>
-          <button type="button" data-value="light">Light</button>
-          <button type="button" data-value="dark">Dark</button>
-        </div>
-        <div class="prefs-popover-label">Navigation</div>
-        <div class="prefs-popover-row">
-          <span>Vim keys</span>
-          <label class="prefs-switch">
-            <input type="checkbox" id="prefsVimNavToggle">
-            <span class="prefs-switch-track"></span>
-          </label>
-        </div>
-        <div class="prefs-popover-row" style="margin-top: 0.4em;">
-          <span>Palette Key</span>
-          <input type="text" id="prefsPaletteKey" class="prefs-input" style="width: 40px; text-align: center; text-transform: lowercase;" maxlength="1">
-        </div>
-        <div class="prefs-popover-label" style="margin-top: 0.6em;">Sync</div>
-        <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.4em; padding-bottom: 0.2em;">
-          <input type="text" id="prefsGitUrl" placeholder="git@github.com:user/repo.git" class="prefs-input">
-          <div style="display: flex; gap: 0.4em;">
-            <button type="button" class="prefs-btn" id="prefsGitSetupBtn">Setup</button>
-            <button type="button" class="prefs-btn" id="prefsGitSyncBtn">Sync Now</button>
-          </div>
-          <div id="prefsGitStatus" style="font-size: 0.75em; color: var(--muted); text-align: center; margin-top: 0.2em;">Not configured</div>
-        </div>
-        <!--AUTH_LOGOUT_SLOT-->
-      </div>
+      
       <div class="sidebar-footer">
         <a href="/pipeline">Pipeline</a>
         <span class="footer-sep">&middot;</span>
@@ -1486,6 +1503,56 @@ input[type=file] { display: none; }
       </div>
     </div>
   </aside>
+
+  <div class="prefs-overlay" id="prefsOverlay" hidden>
+    <div class="prefs-modal" id="prefsModal">
+      <div class="prefs-modal-header">
+        <h2>Preferences</h2>
+        <button class="prefs-modal-close" id="prefsCloseBtn">&times;</button>
+      </div>
+      <div class="prefs-popover-label">Theme</div>
+      <div class="prefs-theme-grid" id="prefsThemeGrid">
+        <button type="button" data-value="auto">Auto</button>
+        <button type="button" data-value="light">Light</button>
+        <button type="button" data-value="dark">Dark</button>
+      </div>
+      <div class="prefs-popover-label">PDF Parser</div>
+      <div class="prefs-theme-grid" id="prefsPdfParserGrid">
+        <button type="button" data-value="docling">Docling</button>
+        <button type="button" data-value="mineru">MinerU Cloud</button>
+      </div>
+      <div class="prefs-popover-row" id="prefsMineruTokenRow" style="flex-direction: column; align-items: stretch; gap: 0.35em; display: none;">
+        <span style="font-size: 0.78em; color: var(--muted); line-height: 1.4;">
+          Free-tier token from
+          <a href="https://mineru.net/user-center/api-token" target="_blank" rel="noopener" style="color: var(--accent);">mineru.net</a>
+          (PDFs are uploaded to MinerU&rsquo;s cloud). Or set <code>MINERU_API_TOKEN</code>.
+        </span>
+        <input type="password" id="prefsMineruToken" class="prefs-input" placeholder="MinerU API token" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="prefs-popover-label">Navigation</div>
+      <div class="prefs-popover-row">
+        <span>Vim keys</span>
+        <label class="prefs-switch">
+          <input type="checkbox" id="prefsVimNavToggle">
+          <span class="prefs-switch-track"></span>
+        </label>
+      </div>
+      <div class="prefs-popover-row" style="margin-top: 0.4em;">
+        <span>Palette Key</span>
+        <input type="text" id="prefsPaletteKey" class="prefs-input" style="width: 40px; text-align: center; text-transform: lowercase;" maxlength="1">
+      </div>
+      <div class="prefs-popover-label" style="margin-top: 0.6em;">Sync</div>
+      <div class="prefs-popover-row" style="flex-direction: column; align-items: stretch; gap: 0.4em; padding-bottom: 0.2em;">
+        <input type="text" id="prefsGitUrl" placeholder="git@github.com:user/repo.git" class="prefs-input">
+        <div style="display: flex; gap: 0.4em;">
+          <button type="button" class="prefs-btn" id="prefsGitSetupBtn">Setup</button>
+          <button type="button" class="prefs-btn" id="prefsGitSyncBtn">Sync Now</button>
+        </div>
+        <div id="prefsGitStatus" style="font-size: 0.75em; color: var(--muted); text-align: center; margin-top: 0.2em;">Not configured</div>
+      </div>
+      <!--AUTH_LOGOUT_SLOT-->
+    </div>
+  </div>
 
   <main class="main-col">
     <div class="main-col-scroll">
@@ -1693,8 +1760,11 @@ input[type=file] { display: none; }
   function initTheme() {
     applyTheme(loadSettings().theme || "auto");
     var btn = document.getElementById("navPrefsBtn");
-    var pop = document.getElementById("prefsPopover");
+    var pop = document.getElementById("prefsOverlay");
+    var popModal = document.getElementById("prefsModal");
+    var closeBtn = document.getElementById("prefsCloseBtn");
     var themeGrid = document.getElementById("prefsThemeGrid");
+    var pdfParserGrid = document.getElementById("prefsPdfParserGrid");
     var vimToggle = document.getElementById("prefsVimNavToggle");
     if (!btn || !pop) return;
 
@@ -1705,13 +1775,42 @@ input[type=file] { display: none; }
       });
     }
     setActiveTheme(loadSettings().theme || "auto");
+    
+    var mineruTokenRow = document.getElementById("prefsMineruTokenRow");
+    var mineruTokenInput = document.getElementById("prefsMineruToken");
+    function setActivePdfParser(val) {
+      if (!pdfParserGrid) return;
+      pdfParserGrid.querySelectorAll("button").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.value === val);
+      });
+      if (mineruTokenRow) mineruTokenRow.style.display = val === "mineru" ? "flex" : "none";
+    }
+    setActivePdfParser(loadSettings().pdfParser || "docling");
+    if (mineruTokenInput) {
+      mineruTokenInput.value = loadSettings().mineruApiToken || "";
+      mineruTokenInput.addEventListener("input", function () {
+        saveSettings({ mineruApiToken: mineruTokenInput.value.trim() });
+      });
+    }
+
+    function openPrefs() { pop.hidden = false; }
+    function closePrefs() { pop.hidden = true; }
 
     btn.addEventListener("click", function (e) {
       e.stopPropagation();
-      pop.hidden = !pop.hidden;
+      openPrefs();
     });
+    if (closeBtn) {
+      closeBtn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        closePrefs();
+      });
+    }
     document.addEventListener("click", function (e) {
-      if (!pop.hidden && !pop.contains(e.target) && e.target !== btn) pop.hidden = true;
+      if (!pop.hidden && !popModal.contains(e.target) && e.target !== btn) closePrefs();
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !pop.hidden) closePrefs();
     });
 
     if (themeGrid) {
@@ -1721,6 +1820,16 @@ input[type=file] { display: none; }
           saveSettings({ theme: val });
           applyTheme(val);
           setActiveTheme(val);
+        });
+      });
+    }
+
+    if (pdfParserGrid) {
+      pdfParserGrid.querySelectorAll("button").forEach(function (b) {
+        b.addEventListener("click", function () {
+          var val = b.dataset.value;
+          saveSettings({ pdfParser: val });
+          setActivePdfParser(val);
         });
       });
     }
@@ -2810,15 +2919,46 @@ input[type=file] { display: none; }
 
   function upload(file) {
     var toast = showNoticeToast(
-      '<span class="undo-toast-spinner"></span>Parsing "' + escHtml(file.name) + '"\\u2026 this can take up to a minute.',
+      '<span class="undo-toast-spinner"></span>Parsing "' + escHtml(file.name) + '"\\u2026 this can take a few minutes.',
       "loading"
     );
-    fetch("/api/upload?filename=" + encodeURIComponent(file.name), { method: "POST", body: file })
+    var pdfParser = loadSettings().pdfParser || "docling";
+    var uploadHeaders = {};
+    if (pdfParser === "mineru") {
+      var mineruTok = (loadSettings().mineruApiToken || "").trim();
+      if (mineruTok) uploadHeaders["X-MinerU-Token"] = mineruTok;
+    }
+    fetch("/api/upload?filename=" + encodeURIComponent(file.name) + "&pdfParser=" + encodeURIComponent(pdfParser), {
+      method: "POST",
+      body: file,
+      headers: uploadHeaders,
+      credentials: "same-origin"
+    })
       .then(function (r) {
-        return r.json().then(function (data) { return { ok: r.ok, data: data }; });
+        return r.text().then(function (text) {
+          var data = {};
+          if (text) {
+            try { data = JSON.parse(text); }
+            catch (e) {
+              throw new Error(
+                r.status === 401 || r.status === 302
+                  ? "session expired — refresh and sign in again"
+                  : ("server returned non-JSON (HTTP " + r.status + ")")
+              );
+            }
+          }
+          return { ok: r.ok, status: r.status, data: data };
+        });
       })
       .then(function (res) {
         if (!res.ok) {
+          if (res.status === 401 || (res.data && res.data.error === "unauthorized")) {
+            showNoticeToast(
+              'Session expired — <a href="/login?next=/">sign in</a> and try the upload again.',
+              "error", 10000, toast
+            );
+            return;
+          }
           showNoticeToast(
             'Could not parse "' + escHtml(file.name) + '": ' + escHtml(res.data.error || "unknown error"),
             "error", 8000, toast
@@ -2959,7 +3099,7 @@ input[type=file] { display: none; }
   function showAccountView() {
     currentMainView = "account";
     closeInfoPanel();
-    var pop = document.getElementById("prefsPopover");
+    var pop = document.getElementById("prefsOverlay");
     if (pop) pop.hidden = true;
     document.getElementById("libraryView").hidden = true;
     document.getElementById("accountView").hidden = false;
@@ -3483,6 +3623,7 @@ p a { color: var(--accent); }
   <p>readwise (Reader) is one of my favorite products of all time. unfortunately they never added latex support so I could not read papers using the default. i vibe coded this out so that i can do that now.</p>
   <p>given the fact that this is vibe coded and that i am prone to dumbassery, please treat this as a prototype and don't do anything extremely stupid. if you like this idea, let me know and i might flesh it out even more! you are free to self host if you find this valuable for your workflow. all the code is on <a href="https://github.com/andrewluoooo/paper-reader">github</a>.</p>
   <p>accessibility is also a huge issue with pdf research papers, making them difficult to read on various devices or with assistive technologies. this project addresses this by converting papers into a clean, responsive html format.</p>
+  <p>pdfs are inherently flawed because they don't contain any semantic meaning. this is really bad when the whole point of the document is to transfer semantic meaning, which is why open formats like markdown, html, xml, and epub are the best way moving forward.</p>
 </div>
 </body>
 </html>
@@ -4638,8 +4779,16 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = self.rfile.read(length)
 
+        pdf_parser = (qs.get("pdfParser") or ["docling"])[0]
+        mineru_token = (self.headers.get("X-MinerU-Token") or "").strip()
+
         try:
-            entry = _process_upload(filename, data)
+            entry = _process_upload(
+                filename,
+                data,
+                pdf_parser=pdf_parser,
+                mineru_token=mineru_token,
+            )
         except (LatexConvertError, HtmlConvertError, PdfConvertError, EpubConvertError) as e:
             self._send_json({"error": str(e)}, 400)
             return

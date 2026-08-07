@@ -222,6 +222,14 @@ h1.ltx_title_document {
 .ltx_authors { margin: 0 0 1.6em; }
 .ltx_creator { display: block; margin: 0 0 0.7em; }
 .ltx_personname { font-size: 1.05em; }
+/* Publisher HTML (Nature et al.) often ships name-only author lists —
+   render those as a single comma-separated line instead of a tall stack. */
+.ltx_authors_inline { line-height: 1.55; }
+.ltx_authors_inline .ltx_creator {
+  display: inline;
+  margin: 0;
+}
+.ltx_authors_inline .ltx_personname { font-size: 0.95em; }
 .ltx_role_affiliation, .ltx_role_email, .ltx_role_email a {
   color: var(--muted);
   font-size: 0.85em;
@@ -854,11 +862,12 @@ mark.user-highlight.flash { outline: 2px solid var(--link); outline-offset: 2px;
 .reader-hl-inline-label {
   position: absolute;
   display: inline-flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 0.35em;
-  max-width: min(220px, 42vw);
-  padding: 0.18em 0.45em 0.18em 0.18em;
-  border-radius: 999px;
+  max-width: min(320px, 60vw);
+  padding: 0.3em 0.5em;
+  border-radius: 16px;
   background: var(--control-bg);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--hl-line, var(--highlight-yellow-line));
@@ -870,7 +879,6 @@ mark.user-highlight.flash { outline: 2px solid var(--link); outline-offset: 2px;
   pointer-events: auto;
   cursor: pointer;
   transform: translateY(calc(-100% - 4px));
-  white-space: nowrap;
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.12s ease, visibility 0.12s ease;
@@ -879,11 +887,21 @@ mark.user-highlight.flash { outline: 2px solid var(--link); outline-offset: 2px;
   opacity: 1;
   visibility: visible;
 }
+.reader-hl-inline-label-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  width: 100%;
+}
 .reader-hl-inline-label .reader-hl-author-avatar {
   width: 18px; height: 18px; font-size: 0.65em;
 }
 .reader-hl-inline-label-name {
-  overflow: hidden; text-overflow: ellipsis; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 600;
+}
+.reader-hl-inline-label-note {
+  white-space: normal; word-wrap: break-word; line-height: 1.4;
+  padding: 0 2px 2px 2px;
 }
 @media (max-width: 720px) {
   .reader-hl-inline-label-name { max-width: 72px; }
@@ -1504,7 +1522,8 @@ READER_SCRIPT = """
     }
 
     var name = (h.authorName || "").trim();
-    if (!name && !h.authorHasAvatar) {
+    var noteText = (h.note || "").trim();
+    if (!name && !h.authorHasAvatar && !noteText) {
       container.innerHTML = "";
       return;
     }
@@ -1519,27 +1538,47 @@ READER_SCRIPT = """
     chip.title = (name || "Highlight") + " — click to jump";
     chip.setAttribute("aria-label", "Highlight by " + (name || "you"));
 
-    var av = document.createElement("div");
-    av.className = "reader-hl-author-avatar";
-    av.setAttribute("aria-hidden", "true");
-    if (h.authorHasAvatar) {
-      var img = document.createElement("img");
-      img.alt = "";
-      img.src = "/api/account/avatar";
-      img.addEventListener("error", function () {
+    if (h.authorHasAvatar || name) {
+      var headerRow = document.createElement("div");
+      headerRow.className = "reader-hl-inline-label-header";
+
+      var av = document.createElement("div");
+      av.className = "reader-hl-author-avatar";
+      av.setAttribute("aria-hidden", "true");
+      if (h.authorHasAvatar) {
+        var img = document.createElement("img");
+        img.alt = "";
+        img.src = "/api/account/avatar";
+        img.addEventListener("error", function () {
+          av.textContent = (name || "?").charAt(0).toUpperCase();
+        });
+        av.appendChild(img);
+      } else {
         av.textContent = (name || "?").charAt(0).toUpperCase();
-      });
-      av.appendChild(img);
-    } else {
-      av.textContent = (name || "?").charAt(0).toUpperCase();
+      }
+      headerRow.appendChild(av);
+      if (name) {
+        var nm = document.createElement("span");
+        nm.className = "reader-hl-inline-label-name";
+        nm.textContent = name;
+        headerRow.appendChild(nm);
+      }
+      chip.appendChild(headerRow);
     }
-    chip.appendChild(av);
-    if (name) {
-      var nm = document.createElement("span");
-      nm.className = "reader-hl-inline-label-name";
-      nm.textContent = name;
-      chip.appendChild(nm);
+    
+    if (noteText) {
+      var noteEl = document.createElement("span");
+      noteEl.className = "reader-hl-inline-label-note";
+      noteEl.textContent = noteText;
+      if (h.authorHasAvatar || name) {
+        noteEl.style.marginTop = "2px";
+        noteEl.style.borderTop = "1px solid var(--rule)";
+        noteEl.style.paddingTop = "6px";
+        noteEl.style.width = "100%";
+      }
+      chip.appendChild(noteEl);
     }
+
     chip.addEventListener("click", function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -3371,7 +3410,17 @@ READER_SCRIPT = """
   function initDropUpload() {
     var overlay = document.getElementById("readerDropOverlay");
     var toast = document.getElementById("readerUploadToast");
+    var parserHint = document.getElementById("readerDropPdfParserHint");
     if (!overlay || !toast) return;
+
+    function pdfParserLabel() {
+      var p = loadSettings().pdfParser || "docling";
+      return p === "mineru" ? "MinerU Cloud" : "Docling";
+    }
+    function refreshParserHint() {
+      if (!parserHint) return;
+      parserHint.textContent = "PDFs use " + pdfParserLabel() + " (Preferences)";
+    }
 
     function hasFiles(e) {
       return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], "Files") !== -1);
@@ -3381,6 +3430,7 @@ READER_SCRIPT = """
       if (!hasFiles(e)) return;
       e.preventDefault();
       dragCounter++;
+      refreshParserHint();
       overlay.hidden = false;
     });
     window.addEventListener("dragover", function (e) {
@@ -3417,16 +3467,70 @@ READER_SCRIPT = """
     }
 
     function uploadToLibrary(file) {
-      showToast('<span class="reader-upload-spinner"></span>Parsing "' + esc(file.name) + '"… this can take up to a minute.', "loading");
-      fetch("/api/upload?filename=" + encodeURIComponent(file.name), { method: "POST", body: file })
-        .then(function (r) { return r.json().then(function (data) { return { ok: r.ok, data: data }; }); })
+      // Match library-home upload: honor Preferences → PDF Parser (+ token).
+      var pdfParser = loadSettings().pdfParser || "docling";
+      var uploadHeaders = {};
+      if (pdfParser === "mineru") {
+        var mineruTok = (loadSettings().mineruApiToken || "").trim();
+        if (mineruTok) uploadHeaders["X-MinerU-Token"] = mineruTok;
+      }
+      var isPdf = (file.name || "").toLowerCase().slice(-4) === ".pdf";
+      var parsingNote = isPdf
+        ? " via " + (pdfParser === "mineru" ? "MinerU Cloud" : "Docling")
+        : "";
+      showToast(
+        '<span class="reader-upload-spinner"></span>Parsing "' + esc(file.name) + '"' +
+          parsingNote + "\\u2026 this can take a few minutes.",
+        "loading"
+      );
+      fetch(
+        "/api/upload?filename=" + encodeURIComponent(file.name) +
+          "&pdfParser=" + encodeURIComponent(pdfParser),
+        {
+          method: "POST",
+          body: file,
+          headers: uploadHeaders,
+          credentials: "same-origin"
+        }
+      )
+        .then(function (r) {
+          return r.text().then(function (text) {
+            var data = {};
+            if (text) {
+              try { data = JSON.parse(text); }
+              catch (e) {
+                throw new Error(
+                  r.status === 401 || r.status === 302
+                    ? "session expired — refresh and sign in again"
+                    : ("server returned non-JSON (HTTP " + r.status + ")")
+                );
+              }
+            }
+            return { ok: r.ok, status: r.status, data: data };
+          });
+        })
         .then(function (res) {
           if (!res.ok) {
-            showToast('Could not parse "' + esc(file.name) + '": ' + esc(res.data.error || "unknown error"), "error", 8000);
+            if (res.status === 401 || (res.data && res.data.error === "unauthorized")) {
+              showToast(
+                'Session expired — <a href="/login?next=/">sign in</a> and try again.',
+                "error", 10000
+              );
+              return;
+            }
+            showToast(
+              'Could not parse "' + esc(file.name) + '": ' +
+                esc(res.data.error || "unknown error"),
+              "error", 8000
+            );
             return;
           }
           var openHref = "/library/" + encodeURIComponent(res.data.id) + ".html";
-          showToast('Added "' + esc(res.data.title || file.name) + '" to your library. <a href="' + openHref + '">Open it</a>', "success", 8000);
+          showToast(
+            'Added "' + esc(res.data.title || file.name) +
+              '" to your library. <a href="' + openHref + '">Open it</a>',
+            "success", 8000
+          );
         })
         .catch(function (e) {
           showToast("Upload failed: " + esc(e.message), "error", 8000);
@@ -4014,6 +4118,36 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
     if article is None:
         article = soup.body
 
+    # MinerU (and some HTML sources) emit Mathematical Italic / replacement
+    # chars for emphasized words -- normalize before any text extraction.
+    try:
+        from .mineru_normalize import (
+            repair_unicode_artifacts,
+            _promote_frontmatter,
+        )
+    except ImportError:
+        repair_unicode_artifacts = None  # type: ignore[assignment]
+        _promote_frontmatter = None  # type: ignore[assignment]
+    if article is not None:
+        if repair_unicode_artifacts is not None:
+            from bs4 import NavigableString as _NavStr
+            for text_node in list(article.find_all(string=True)):
+                if not isinstance(text_node, _NavStr):
+                    continue
+                if text_node.find_parent(["pre", "code", "script", "style", "math"]):
+                    continue
+                raw = str(text_node)
+                fixed = repair_unicode_artifacts(raw)
+                if fixed != raw:
+                    text_node.replace_with(fixed)
+        # PDF/MinerU papers often lack ltx_authors / ltx_abstract; promote
+        # plain front-matter paragraphs so library cards get authors+summary.
+        if _promote_frontmatter is not None and (
+            article.select_one(".ltx_authors") is None
+            or article.select_one(".ltx_abstract") is None
+        ):
+            _promote_frontmatter(soup, article)
+
     _strip_leaked_preamble_junk(article)
 
     for err in article.find_all(class_="ltx_ERROR"):
@@ -4216,6 +4350,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
   <div class="reader-drop-overlay-card">
     <strong>Drop to add to your library</strong>
     <div>.tex, .zip, .tar.gz, .tgz, .pdf, .epub &mdash; or a saved .html paper page</div>
+    <div id="readerDropPdfParserHint" style="margin-top: 0.55em; font-size: 0.82em;"></div>
   </div>
 </div>
 <div class="reader-upload-toast" id="readerUploadToast" hidden></div>

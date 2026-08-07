@@ -12,6 +12,9 @@ dependencies = [
     "lxml>=5.0",
     "readability-lxml>=0.8",
     "requests>=2.31",
+    "cryptography>=42",
+    "markdown>=3.5",
+    "latex2mathml>=3.77",
 ]
 
 [project.scripts]

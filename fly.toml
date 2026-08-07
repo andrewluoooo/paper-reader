@@ -1,0 +1,37 @@
+# paper-reader on Fly.io
+#
+# Deploy:
+#   fly auth login
+#   fly launch --copy-config --no-deploy   # first time, or use existing app name
+#   fly volumes create paper_reader_data --region <region> --size 3
+#   fly deploy
+#
+# Library data lives on the volume at /data/library.
+
+app = 'paper-reader-andrew'
+primary_region = 'sjc'
+
+[build]
+
+[env]
+  PAPER_READER_LIBRARY_DIR = '/data/library'
+  PAPER_READER_HOST = '0.0.0.0'
+  PAPER_READER_SECURE_COOKIES = '1'
+  PORT = '8080'
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[mounts]
+  source = 'paper_reader_data'
+  destination = '/data'

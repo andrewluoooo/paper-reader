@@ -49,9 +49,17 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--library",
         action="store_true",
-        help="Launch the local library web app (drag-and-drop papers, search, open the reader)",
+        help=(
+            "Launch the local library web app (drag-and-drop papers, search, open the reader). "
+            "Sign-in uses an anonymous secret key by default; set PAPER_READER_DISABLE_AUTH=1 to leave it open."
+        ),
     )
     parser.add_argument("--port", type=int, default=8765, help="Port for --library (default: 8765)")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("PAPER_READER_HOST", "127.0.0.1"),
+        help="Bind address for --library (default: 127.0.0.1; use 0.0.0.0 on Fly/Docker)",
+    )
     parser.add_argument(
         "--no-browser", action="store_true", help="With --library, don't auto-open a browser tab"
     )
@@ -70,8 +78,8 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--rebuild-library",
         action="store_true",
-        help="Re-render every paper already in the library with the current reader styling, then exit "
-        "(also happens automatically whenever --library starts)",
+        help="Re-render every paper already in the unlocked vault with the current reader styling, then exit "
+        "(with auth enabled, rebuild runs automatically after sign-in; with auth disabled, also on --library start)",
     )
     args = parser.parse_args(argv)
 
@@ -94,7 +102,7 @@ def main(argv=None) -> int:
         from . import server
 
         if args.foreground:
-            server.run(port=args.port, open_browser=not args.no_browser)
+            server.run(host=args.host, port=args.port, open_browser=not args.no_browser)
             return 0
 
         url = f"http://127.0.0.1:{args.port}/"

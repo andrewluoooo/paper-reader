@@ -81,6 +81,18 @@ paper-reader --rebuild-library         # re-render every saved paper with the
                                         # current styling, then exit
 ```
 
+**Account & vaults** -- anonymous secret-key sign-in by default. Each key
+unlocks its own encrypted vault; a new key starts empty (papers are never
+shared across keys). Legacy flat libraries are claimed once into the first
+key that signs in or generates after upgrade. Only salts and a key hash are
+kept in `accounts.json`. Export a plaintext ZIP from Preferences. Log out
+from Preferences. To skip auth entirely:
+
+```bash
+export PAPER_READER_DISABLE_AUTH=1
+paper-reader --library
+```
+
 **One-shot mode** -- convert a single paper straight to an HTML file:
 
 ```bash
@@ -114,45 +126,18 @@ won't be present in a saved snapshot.
 
 ### Importing a PDF
 
-When you don't have a LaTeX source or an HTML page -- just a `.pdf` -- drop
-it on the library (or pass it to the CLI) directly. PDF structure (title,
-authors, section headings, abstract, in-text citations, and the
-bibliography) is extracted by [GROBID](https://github.com/kermitt2/grobid),
-a machine-learning service purpose-built for parsing scholarly PDFs, then
-mapped into the same structure the LaTeX and HTML paths produce. The
-resulting page gets the same reflowable text, theming, highlighting, outline,
-and citation hover-previews as any other paper in the library -- including
-real, clickable citation links, since GROBID resolves in-text references
-against its own parsed bibliography.
+Drop a `.pdf` on the library (or pass it to the CLI). Structure is extracted
+by one of two backends (Preferences → **PDF Parser**):
 
-**GROBID has to be running first.** It's a separate local service, not a
-Python dependency -- the easiest way to run it is with
-[Colima](https://github.com/abiosoft/colima) (a lightweight, GUI-free Docker
-runtime for macOS):
+- **Docling** (default) -- runs locally (`pip install docling`)
+- **MinerU Cloud** -- free-tier [MinerU API](https://mineru.net/apiManage/docs).
+  Create a token at https://mineru.net/user-center/api-token, paste it in
+  Preferences (or `export MINERU_API_TOKEN=…`), then choose **MinerU Cloud**.
+  The PDF is uploaded to MinerU; markdown + images come back into the same
+  local restyle pipeline. Caps: 200 MB / ~200 pages per file; daily free
+  high-priority page quota on their side.
 
-```bash
-brew install colima docker
-colima start --cpu 4 --memory 4
-docker run --rm -d -p 8070:8070 --name grobid grobid/grobid:0.9.0-crf
-```
-
-That `-crf` tag is the CRF-only build (~500MB) rather than the `-full` build
-(~10GB) that also bundles GROBID's optional deep-learning models -- the CRF
-models are what GROBID uses by default either way, so unless you've got a
-GPU and specifically want the deep-learning models, `-crf` gets you the same
-extraction quality for a much smaller download.
-
-The first `docker run` still pulls an image, so give it a minute or two.
-After that, `docker start grobid` / `docker stop grobid` bring it back up or
-down without pulling again. paper-reader looks for GROBID at
-`http://localhost:8070` by default; point it elsewhere with the `GROBID_URL`
-environment variable if you're running it on a different host or port. If
-GROBID isn't reachable when you drop a PDF, you'll get a clear error telling
-you to start it.
-
-This is still best-effort -- scanned-image PDFs with no real text layer, or
-unusual layouts GROBID doesn't recognize well, may extract incompletely.
-Figures and tables come through as captions only (no embedded images).
+PDF import is best-effort for scanned or unusual layouts.
 
 ### Importing an EPUB
 
@@ -172,4 +157,5 @@ DRM-protected EPUBs and heavily scripted fixed-layout books won't convert.
   per paper -- they live in whichever browser you read the paper in, not on
   the server or in any file.
 - The library server is a plain `http.server` app meant for local/personal
-  use (e.g. over Tailscale) -- there's no authentication.
+  use (e.g. over Tailscale). Sign-in uses an anonymous secret key by default;
+  set `PAPER_READER_DISABLE_AUTH=1` if you want it open.

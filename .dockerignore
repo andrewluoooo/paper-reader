@@ -1,0 +1,17 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.cursor
+assets
+output
+scratch.html
+*.log
+force_reconvert.py
+patch_*.py
+**/.DS_Store
