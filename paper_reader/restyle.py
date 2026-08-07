@@ -1014,7 +1014,11 @@ html.sidebar-right-collapsed .reader-notes-toggle { display: inline-flex; }
   font-size: 0.82em;
   line-height: 1.5;
   color: var(--fg);
-  pointer-events: none;
+  /* Interactive so the pointer can move onto the tooltip (and select
+     citation text) without the hover-preview disappearing. */
+  pointer-events: auto;
+  user-select: text;
+  cursor: text;
 }
 .reader-citation-tooltip[hidden] { display: none; }
 .reader-citation-tooltip-num {
@@ -1025,10 +1029,8 @@ html.sidebar-right-collapsed .reader-notes-toggle { display: inline-flex; }
   font-size: 0.9em;
 }
 .reader-citation-tooltip-text {
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  overflow: auto;
+  max-height: 12em;
 }
 a.ltx_ref[href^="#bib."] { text-decoration-style: dotted; }
 
@@ -1044,7 +1046,8 @@ a.ltx_ref[href^="#bib."] { text-decoration-style: dotted; }
   box-shadow: 0 8px 24px rgba(0,0,0,0.2);
   padding: 0.7em 0.8em;
   font-family: var(--reader-font-sans);
-  pointer-events: none;
+  pointer-events: auto;
+  user-select: text;
 }
 .reader-ref-preview[hidden] { display: none; }
 .reader-ref-preview-body {
@@ -1057,20 +1060,23 @@ a.ltx_ref[href^="#bib."] { text-decoration-style: dotted; }
   max-height: 200px;
   object-fit: contain;
   display: block;
+  /* Don't let a drag-select on the caption start an image drag. */
+  -webkit-user-drag: none;
+  user-select: none;
 }
 .reader-ref-preview-body table {
   border-collapse: collapse;
   transform-origin: top left;
+  user-select: text;
 }
 .reader-ref-preview-caption {
   margin-top: 0.5em;
   font-size: 0.78em;
   line-height: 1.45;
   color: var(--muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  overflow: auto;
+  max-height: 9em;
+  cursor: text;
 }
 
 /* ---- whole-page drag-and-drop upload (matches the library home page) -- */
@@ -2566,6 +2572,35 @@ READER_SCRIPT = """
       if (citeTooltip) citeTooltip.hidden = true;
       if (refTooltip) refTooltip.hidden = true;
     }
+    function selectionInsidePreview() {
+      var sel = window.getSelection && window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.anchorNode) return false;
+      var n = sel.anchorNode;
+      return !!(
+        (citeTooltip && !citeTooltip.hidden && citeTooltip.contains(n)) ||
+        (refTooltip && !refTooltip.hidden && refTooltip.contains(n))
+      );
+    }
+    function scheduleHide() {
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      // Long enough to bridge the gap between the link and the floating
+      // preview; skip hiding entirely while the user is selecting text
+      // inside the preview (mouse often leaves the box mid-drag).
+      hideTimer = setTimeout(function () {
+        if (selectionInsidePreview()) return;
+        hideAll();
+      }, 220);
+    }
+    function cancelHide() {
+      clearTimeout(hideTimer);
+    }
+    function isPreviewEl(el) {
+      return !!(el && (
+        (citeTooltip && (el === citeTooltip || citeTooltip.contains(el))) ||
+        (refTooltip && (el === refTooltip || refTooltip.contains(el)))
+      ));
+    }
     function targetOf(link) {
       var href = link.getAttribute("href") || "";
       return href.indexOf("#") === 0 ? document.getElementById(href.slice(1)) : null;
@@ -2642,7 +2677,7 @@ READER_SCRIPT = """
       if (!link) return;
       var kind = classify(link);
       if (!kind) return;
-      clearTimeout(hideTimer);
+      cancelHide();
       clearTimeout(showTimer);
       showTimer = setTimeout(function () {
         if (kind === "cite") showCitation(link); else showRef(link);
@@ -2651,12 +2686,39 @@ READER_SCRIPT = """
     document.addEventListener("mouseout", function (e) {
       var link = e.target.closest && e.target.closest("a.ltx_ref");
       if (!link || !classify(link)) return;
+      // Moving from the link into the preview itself -- keep it open.
+      if (isPreviewEl(e.relatedTarget)) {
+        cancelHide();
+        return;
+      }
       clearTimeout(showTimer);
-      hideTimer = setTimeout(hideAll, 120);
+      scheduleHide();
     });
+    if (citeTooltip) {
+      citeTooltip.addEventListener("mouseenter", cancelHide);
+      citeTooltip.addEventListener("mouseleave", function (e) {
+        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("a.ltx_ref")) {
+          cancelHide();
+          return;
+        }
+        scheduleHide();
+      });
+    }
+    if (refTooltip) {
+      refTooltip.addEventListener("mouseenter", cancelHide);
+      refTooltip.addEventListener("mouseleave", function (e) {
+        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest("a.ltx_ref")) {
+          cancelHide();
+          return;
+        }
+        scheduleHide();
+      });
+    }
     document.addEventListener("scroll", hideAll, true);
-    document.addEventListener("click", function (e) {
-      if (e.target.closest && e.target.closest("a.ltx_ref")) hideAll();
+    document.addEventListener("mousedown", function (e) {
+      if (e.target.closest && e.target.closest("a.ltx_ref")) { hideAll(); return; }
+      if (isPreviewEl(e.target)) return; // selecting / interacting inside
+      hideAll();
     });
   }
 
@@ -3540,6 +3602,33 @@ def _strip_leaked_preamble_junk(article) -> None:
         sib.decompose()
 
 
+def _strip_acronym_lists(article) -> None:
+    """Drop printed acronym glossaries that LaTeXML emits for the
+    `{acronym}` environment.
+
+    Papers almost always load acronym with `[nolist]` (define terms for
+    \\ac/\\acs/\\acl without printing a list), but LaTeXML's stock binding
+    ignores that option and dumps a full <dl> -- typically right under
+    Keywords, where `\\input{acro}` sits. Inline glossaryref expansions
+    still carry the long-form in their title tooltip; unwrap <a href>
+    wrappers that pointed at the now-removed list entries so we don't
+    leave dead fragment links."""
+    removed_ids: set[str] = set()
+    for section in list(article.select("section.ltx_glossary.ltx_acronym, "
+                                       "section.ltx_list_acronym")):
+        for entry in section.select("[id]"):
+            eid = entry.get("id")
+            if eid:
+                removed_ids.add(eid)
+        section.decompose()
+    if not removed_ids:
+        return
+    for a in list(article.find_all("a", href=True)):
+        href = a["href"]
+        if href.startswith("#") and href[1:] in removed_ids:
+            a.unwrap()
+
+
 _OUTLINE_LEVELS = {
     "ltx_title_document": 0,
     "ltx_title_abstract": 1,
@@ -3615,6 +3704,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
     for el in article.select(".ltx_page_logo, .ltx_navigation, nav"):
         el.decompose()
 
+    _strip_acronym_lists(article)
     _dedupe_document_title(article)
     _fix_author_notes(soup, article)
     metadata = _extract_metadata(article)  # must run before _fix_notes decomposes the ACM front-matter notes
@@ -3807,7 +3897,7 @@ def restyle(html_path: str, source_name: str = "", back_link: str = "") -> tuple
 <div class="reader-drop-overlay" id="readerDropOverlay" hidden>
   <div class="reader-drop-overlay-card">
     <strong>Drop to add to your library</strong>
-    <div>.tex, .zip, .tar.gz, .tgz, .pdf &mdash; or a saved .html paper page</div>
+    <div>.tex, .zip, .tar.gz, .tgz, .pdf, .epub &mdash; or a saved .html paper page</div>
   </div>
 </div>
 <div class="reader-upload-toast" id="readerUploadToast" hidden></div>

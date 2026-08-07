@@ -3,8 +3,9 @@
 Convert arXiv-style LaTeX papers (via [LaTeXML](https://dlmf.nist.gov/LaTeXML/),
 the same converter arXiv itself uses for its HTML views) -- or an
 already-rendered HTML paper page saved from a publisher's site (ACM DL, IEEE
-Xplore, and similar) -- into a single-column, Readwise-Reader-style HTML page,
-and read/highlight/annotate it through a small local library web app.
+Xplore, and similar), a PDF, or an EPUB -- into a single-column,
+Readwise-Reader-style HTML page, and read/highlight/annotate it through a
+small local library web app.
 
 Features: light/dark/auto theme, adjustable text size/font/column width,
 resizable/collapsible sidebars, click-to-highlight with optional notes,
@@ -57,10 +58,13 @@ pip install -e .
 
 ## Usage
 
+See **[GUIDE.md](GUIDE.md)** for a short how-to (also available in the library
+UI under **Guide** next to GitHub).
+
 **Library mode** -- a local web app where you drag and drop LaTeX sources
 (`.tex`, `.zip`, `.tar.gz`, `.tgz`, `.tar` -- e.g. an arXiv "Other formats ->
-Source" download), a saved HTML paper page (`.html`/`.htm`), or a plain
-`.pdf`, and get a searchable library of reader pages:
+Source" download), a saved HTML paper page (`.html`/`.htm`), a plain
+`.pdf`, or an `.epub`, and get a searchable library of reader pages:
 
 ```bash
 paper-reader --library
@@ -149,6 +153,18 @@ you to start it.
 This is still best-effort -- scanned-image PDFs with no real text layer, or
 unusual layouts GROBID doesn't recognize well, may extract incompletely.
 Figures and tables come through as captions only (no embedded images).
+
+### Importing an EPUB
+
+Drop an `.epub` on the library (or pass it to the CLI) the same way as other
+formats. The converter reads the package document (OPF) for title/authors and
+spine reading order, concatenates the XHTML chapters, and maps them into the
+same `ltx_*` HTML structure the LaTeX / HTML / PDF paths produce -- so you get
+the same reflowable reader, theming, highlighting, and outline.
+
+Images embedded in the book are preserved; a chapter that looks like a
+references list is turned into the shared bibliography section when possible.
+DRM-protected EPUBs and heavily scripted fixed-layout books won't convert.
 
 ## Notes
 

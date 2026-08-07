@@ -1,9 +1,9 @@
 """
 A very small local web app around the existing convert+restyle pipeline:
-drag a LaTeX source file (.tex / .tar.gz / .tgz / .zip) onto the home
-page, it gets parsed the same way the CLI does, and the result is added
-to a local library you can search and open (each paper opens as its own
-self-contained reader page, in a new tab).
+drag a LaTeX source file (.tex / .tar.gz / .tgz / .zip), HTML page, PDF, or
+EPUB onto the home page, it gets parsed the same way the CLI does, and the
+result is added to a local library you can search and open (each paper opens
+as its own self-contained reader page, in a new tab).
 
 No framework -- just the standard library's http.server, since the only
 job here is "save an upload, run a function, list some JSON, serve some
@@ -26,6 +26,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .epub_convert import EpubConvertError
+from .epub_convert import convert as convert_epub
 from .html_convert import HtmlConvertError
 from .html_convert import convert as convert_html
 from .latex_convert import LatexConvertError, convert as convert_latex
@@ -43,9 +45,12 @@ LOG_PATH = LIBRARY_DIR / "server.log"
 # without re-running the slow LaTeX->HTML conversion.
 RAW_DIR = LIBRARY_DIR / "raw"
 
-ALLOWED_UPLOAD_SUFFIXES = (".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", ".htm", ".pdf")
+ALLOWED_UPLOAD_SUFFIXES = (
+    ".tex", ".zip", ".tar.gz", ".tgz", ".tar", ".html", ".htm", ".pdf", ".epub",
+)
 HTML_SOURCE_SUFFIXES = (".html", ".htm")
 PDF_SOURCE_SUFFIXES = (".pdf",)
+EPUB_SOURCE_SUFFIXES = (".epub",)
 MAX_UPLOAD_BYTES = 60 * 1024 * 1024  # 60MB is generous for a LaTeX source tree
 PAPER_STATUSES = ("inbox", "later", "archive", "trash")
 
@@ -57,6 +62,7 @@ PAPER_STATUSES = ("inbox", "later", "archive", "trash")
 # persisted: a server restart clears it, same as it would drop an in-flight
 # upload's connection anyway.
 _JOBS_LOCK = threading.Lock()
+_INDEX_LOCK = threading.Lock()
 _active_jobs: dict[str, dict] = {}
 _JOB_HISTORY_LIMIT = 30
 _job_history: list[dict] = []
@@ -103,17 +109,43 @@ def _list_jobs() -> dict:
 
 
 def _load_index() -> list[dict]:
-    if INDEX_PATH.is_file():
+    if not INDEX_PATH.is_file():
+        return []
+    try:
+        raw = INDEX_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        # Recover from truncated/double-written files (e.g. concurrent
+        # uploads appending an extra "]"). Take the first complete JSON
+        # value and ignore trailing junk.
         try:
-            return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return []
-    return []
+            data, _end = json.JSONDecoder().raw_decode(raw.lstrip())
+            if isinstance(data, list):
+                try:
+                    _save_index(data)
+                except OSError:
+                    pass
+                return data
+        except json.JSONDecodeError:
+            pass
+        return []
 
 
 def _save_index(items: list[dict]) -> None:
+    """Atomic write so a crash or concurrent reader never sees a half-written
+    or double-appended index.json."""
     LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    INDEX_PATH.write_text(json.dumps(items, indent=2), encoding="utf-8")
+    payload = json.dumps(items, indent=2)
+    tmp_path = INDEX_PATH.with_suffix(".json.tmp")
+    with _INDEX_LOCK:
+        tmp_path.write_text(payload, encoding="utf-8")
+        os.replace(tmp_path, INDEX_PATH)
 
 
 def _process_upload(filename: str, data: bytes) -> dict:
@@ -128,7 +160,13 @@ def _process_upload(filename: str, data: bytes) -> dict:
 
         is_html_source = filename.lower().endswith(HTML_SOURCE_SUFFIXES)
         is_pdf_source = filename.lower().endswith(PDF_SOURCE_SUFFIXES)
-        kind = "html" if is_html_source else "pdf" if is_pdf_source else "latex"
+        is_epub_source = filename.lower().endswith(EPUB_SOURCE_SUFFIXES)
+        kind = (
+            "html" if is_html_source
+            else "pdf" if is_pdf_source
+            else "epub" if is_epub_source
+            else "latex"
+        )
         with tempfile.TemporaryDirectory(prefix="paper_reader_upload_") as tmp:
             tmp_path = Path(tmp) / os.path.basename(filename)
             tmp_path.write_bytes(data)
@@ -137,6 +175,8 @@ def _process_upload(filename: str, data: bytes) -> dict:
                 raw_html_path = convert_html(str(tmp_path), str(raw_workdir))
             elif is_pdf_source:
                 raw_html_path = convert_pdf(str(tmp_path), str(raw_workdir))
+            elif is_epub_source:
+                raw_html_path = convert_epub(str(tmp_path), str(raw_workdir))
             else:
                 raw_html_path = convert_latex(str(tmp_path), str(raw_workdir))
 
@@ -320,7 +360,7 @@ def rebuild_library(quiet: bool = False) -> tuple[int, int]:
 HOME_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
 <script>
 (function () {
   try {
@@ -378,6 +418,23 @@ button, input, select, textarea { font-family: inherit; }
 @keyframes overlayCardIn { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: scale(1); } }
 @keyframes menuIn { from { opacity: 0; transform: scale(0.95) translateY(-4px); } to { opacity: 1; transform: scale(1) translateY(0); } }
 @keyframes slideDown { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes leafRustle {
+  0%, 100% { transform: rotate(0deg); }
+  20% { transform: rotate(4deg); }
+  45% { transform: rotate(-2.5deg); }
+  70% { transform: rotate(3deg); }
+  85% { transform: rotate(-1.5deg); }
+}
+@keyframes leafRustleAlt {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-3.5deg); }
+  50% { transform: rotate(2deg); }
+  75% { transform: rotate(-2deg); }
+}
+@keyframes stemSway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(1.2deg); }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
@@ -395,9 +452,70 @@ button, input, select, textarea { font-family: inherit; }
 html.library-sidebar-collapsed .sidebar {
   flex-basis: 0; width: 0; padding-left: 0; padding-right: 0; border-right-color: transparent; opacity: 0;
 }
-.sidebar-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6em; padding: 0 0.3em; margin-bottom: 1.4em; }
-.brand { display: flex; align-items: center; gap: 0.35em; flex: 1; min-width: 0; font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; font-weight: 600; font-size: 1.05em; line-height: 1.25; }
-.sidebar-add-btn { width: 28px; height: 28px; font-size: 1.2em; line-height: 1; }
+.sidebar-top {
+  display: flex;
+  align-items: center;
+  gap: 0.55em;
+  padding: 0 0.3em;
+  margin-bottom: 1.4em;
+}
+.brand {
+  display: flex; align-items: center; gap: 0.55em; flex: 1; min-width: 0;
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+  font-weight: 600; font-size: 1.05em; line-height: 1.25;
+}
+.brand-text { min-width: 0; flex: 1; }
+.brand-logo {
+  width: 4.6em; height: 4.6em; flex-shrink: 0; display: block; overflow: visible;
+}
+.brand-logo .plant-foliage {
+  transform-origin: 16px 22px;
+  animation: stemSway 5.5s ease-in-out infinite;
+}
+.brand-logo .leaf {
+  transform-box: fill-box;
+  transform-origin: center bottom;
+  animation: leafRustle 3.4s ease-in-out infinite;
+}
+.brand-logo .leaf-1 { animation-duration: 3.1s; animation-delay: 0s; }
+.brand-logo .leaf-2 { animation-name: leafRustleAlt; animation-duration: 2.8s; animation-delay: -0.6s; }
+.brand-logo .leaf-3 { animation-duration: 3.6s; animation-delay: -1.2s; }
+.brand-logo .leaf-4 { animation-name: leafRustleAlt; animation-duration: 3.0s; animation-delay: -0.3s; }
+.brand-logo .leaf-5 { animation-duration: 2.6s; animation-delay: -1.8s; }
+@media (prefers-reduced-motion: reduce) {
+  .brand-logo .plant-foliage,
+  .brand-logo .leaf { animation: none !important; }
+}
+.add-paper-fab {
+  position: absolute;
+  right: max(1.4rem, 2.4vw);
+  bottom: 1.6rem;
+  z-index: 40;
+  width: 72px;
+  height: 72px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--fg);
+  color: var(--bg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  transition: transform 0.12s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+.add-paper-fab:hover {
+  transform: scale(1.05);
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.22);
+}
+.add-paper-fab:active { transform: scale(0.96); }
+.add-paper-fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.add-paper-fab svg { width: 32px; height: 32px; display: block; }
+@media (prefers-color-scheme: dark) {
+  .add-paper-fab { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); }
+}
+:root[data-theme="dark"] .add-paper-fab { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45); }
+:root[data-theme="light"] .add-paper-fab { box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
 .sidebar-nav { display: flex; flex-direction: column; gap: 0.1em; flex: 1; min-height: 0; }
 .nav-item {
   display: flex; align-items: center; gap: 0.5em; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
@@ -471,7 +589,14 @@ html.library-sidebar-collapsed .sidebar {
 .prefs-btn:hover { background: var(--rule); }
 
 /* --------------------------------------------------------------- main col */
-.main-col { flex: 1; min-width: 0; overflow-y: auto; padding: 2.4em 3.2vw 8vh; }
+.main-col {
+  flex: 1; min-width: 0; overflow: hidden; position: relative;
+  display: flex; flex-direction: column;
+}
+.main-col-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 2.4em 3.2vw 8vh;
+}
 .main-topbar {
   display: flex; align-items: center; gap: 1.8em; border-bottom: 1px solid var(--rule); margin-bottom: 1.3em;
   font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
@@ -523,7 +648,7 @@ input[type=file] { display: none; }
   background-repeat: no-repeat; background-position: right 0.55em center; appearance: none; -webkit-appearance: none;
 }
 .sort-control:hover .sort-select { color: var(--fg); }
-.paper-list { display: flex; flex-direction: column; }
+.paper-list { display: flex; flex-direction: column; padding-bottom: 5.5rem; }
 .paper-card {
   position: relative; display: flex; align-items: flex-start; gap: 0.9em;
   border: 1px solid var(--rule); border-radius: 10px;
@@ -815,15 +940,46 @@ input[type=file] { display: none; }
   <aside class="sidebar">
     <div class="sidebar-top">
       <span class="brand">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></svg>
-        Andrew&rsquo;s Paper Library
-      </span>
-      <button type="button" class="icon-btn sidebar-add-btn" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source or saved HTML page)">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19"></line>
-          <line x1="5" y1="12" x2="19" y2="12"></line>
+        <svg class="brand-logo" viewBox="0 0 32 32" width="72" height="72" aria-hidden="true" focusable="false">
+          <!-- terracotta pot -->
+          <path fill="#c47a5a" d="M9.5 19.2h13l-1.55 9.1c-.15.9-.9 1.55-1.8 1.55h-6.3c-.9 0-1.65-.65-1.8-1.55L9.5 19.2z"/>
+          <path fill="#a86548" d="M9.5 19.2h13l-.35 2.05H9.85z" opacity=".55"/>
+          <ellipse fill="#4a3728" cx="16" cy="19.1" rx="6.6" ry="2.15"/>
+          <ellipse fill="#3a2a1f" cx="16" cy="18.6" rx="5.4" ry="1.35" opacity=".55"/>
+          <!-- foliage group: gentle stem sway -->
+          <g class="plant-foliage">
+            <path fill="none" stroke="#3a6b4f" stroke-width="1.7" stroke-linecap="round"
+                  d="M16 19.1c0-3.2.15-6.4.1-9.5"/>
+            <!-- left mid leaf -->
+            <g class="leaf leaf-1">
+              <ellipse fill="#4fa882" cx="10.8" cy="12.2" rx="5.1" ry="2.55" transform="rotate(-42 10.8 12.2)"/>
+              <path fill="none" stroke="#2f6f56" stroke-width=".7" stroke-linecap="round"
+                    d="M14.6 14.4c-1.6-1.1-3.2-2-5.1-2.5" opacity=".55"/>
+            </g>
+            <!-- right mid leaf -->
+            <g class="leaf leaf-2">
+              <ellipse fill="#3d8b6e" cx="21.2" cy="11.6" rx="5.1" ry="2.55" transform="rotate(40 21.2 11.6)"/>
+              <path fill="none" stroke="#2a5f4a" stroke-width=".7" stroke-linecap="round"
+                    d="M17.4 13.8c1.6-1.1 3.2-2 5.1-2.5" opacity=".55"/>
+            </g>
+            <!-- top center leaf -->
+            <g class="leaf leaf-3">
+              <ellipse fill="#2f6f56" cx="16" cy="6.6" rx="3.35" ry="5.1"/>
+              <path fill="none" stroke="#245a45" stroke-width=".75" stroke-linecap="round"
+                    d="M16 10.8V3.4" opacity=".5"/>
+            </g>
+            <!-- small left upper leaf -->
+            <g class="leaf leaf-4">
+              <ellipse fill="#5bb892" cx="12.2" cy="8.4" rx="3.3" ry="1.75" transform="rotate(-55 12.2 8.4)"/>
+            </g>
+            <!-- small right upper leaf -->
+            <g class="leaf leaf-5">
+              <ellipse fill="#458f70" cx="19.8" cy="7.9" rx="3.2" ry="1.7" transform="rotate(52 19.8 7.9)"/>
+            </g>
+          </g>
         </svg>
-      </button>
+        <span class="brand-text">Andrew&rsquo;s Paper Library</span>
+      </span>
     </div>
     <nav class="sidebar-nav">
       <button type="button" class="nav-item" id="navHome">Home</button>
@@ -869,12 +1025,15 @@ input[type=file] { display: none; }
         <span class="footer-sep">&middot;</span>
         <a href="/about">About</a>
         <span class="footer-sep">&middot;</span>
+        <a href="/guide">Guide</a>
+        <span class="footer-sep">&middot;</span>
         <a href="https://github.com/andrewluoooo/paper-reader">GitHub</a>
       </div>
     </div>
   </aside>
 
   <main class="main-col">
+    <div class="main-col-scroll">
     <div class="main-topbar">
       <div class="topbar-title">
         Library
@@ -905,6 +1064,13 @@ input[type=file] { display: none; }
     <div class="status" id="status"></div>
 
     <div class="paper-list" id="paperList"></div>
+    </div>
+    <button type="button" class="add-paper-fab" id="addPaperBtn" aria-label="Add a paper" title="Add a paper (LaTeX source, PDF, EPUB, or saved HTML page)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+    </button>
   </main>
 
   <aside class="info-panel" id="infoPanel" hidden>
@@ -915,12 +1081,12 @@ input[type=file] { display: none; }
   </aside>
 </div>
 
-<input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm,.pdf">
+<input type="file" id="fileInput" accept=".tex,.zip,.tar.gz,.tgz,.tar,.html,.htm,.pdf,.epub,application/epub+zip">
 
 <div class="drop-overlay" id="dropOverlay" hidden>
   <div class="drop-overlay-card">
     <strong>Drop to add to your library</strong>
-    <div>.tex, .zip, .tar.gz, .tgz, .pdf &mdash; or a saved .html paper page</div>
+    <div>.tex, .zip, .tar.gz, .tgz, .pdf, .epub &mdash; or a saved .html paper page</div>
   </div>
 </div>
 
@@ -1605,7 +1771,11 @@ input[type=file] { display: none; }
       metaTable.appendChild(row);
     }
     var srcLower = (p.sourceFilename || "").toLowerCase();
-    var typeLabel = (srcLower.slice(-5) === ".html" || srcLower.slice(-4) === ".htm") ? "HTML import" : "LaTeX source";
+    var typeLabel =
+      (srcLower.slice(-5) === ".html" || srcLower.slice(-4) === ".htm") ? "HTML import" :
+      (srcLower.slice(-4) === ".pdf") ? "PDF import" :
+      (srcLower.slice(-5) === ".epub") ? "EPUB import" :
+      "LaTeX source";
     metaRow("Type", typeLabel);
     metaRow("Venue", p.venue);
     metaRow("Added", fmtDate(p.addedAt));
@@ -1685,7 +1855,7 @@ input[type=file] { display: none; }
     filtered.sort(SORT_COMPARATORS[sortBy] || SORT_COMPARATORS.added);
     if (!filtered.length) {
       var emptyMsg;
-      if (!papers.length) emptyMsg = "No papers yet \u2014 drop a LaTeX source or saved HTML paper page anywhere on this page to get started.";
+      if (!papers.length) emptyMsg = "No papers yet \u2014 drop a LaTeX source, PDF, EPUB, or saved HTML paper page anywhere on this page to get started.";
       else if (q || activeTags.length) emptyMsg = "No matching papers.";
       else emptyMsg = TAB_EMPTY_MESSAGES[currentTab] || "Nothing here yet.";
       list.innerHTML = '<div class="empty-state">' + emptyMsg + "</div>";
@@ -2048,7 +2218,7 @@ input[type=file] { display: none; }
       if (refreshing || Date.now() < cooldownUntil) return;
       if (e.target && e.target.closest && e.target.closest(".sidebar, .info-panel")) return;
       
-      var mainCol = document.querySelector(".main-col");
+      var mainCol = document.querySelector(".main-col-scroll") || document.querySelector(".main-col");
       var currentScrollY = mainCol ? mainCol.scrollTop : 0;
       
       if (currentScrollY > 0) {
@@ -2387,7 +2557,7 @@ input[type=file] { display: none; }
 ABOUT_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
 <script>
 (function () {
   try {
@@ -2455,10 +2625,126 @@ p a { color: var(--accent); }
 </html>
 """
 
+GUIDE_PAGE_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
+<script>
+(function () {
+  try {
+    var s = JSON.parse(localStorage.getItem("paper_reader_settings") || "{}");
+    if (s.theme === "light" || s.theme === "dark") document.documentElement.setAttribute("data-theme", s.theme);
+  } catch (e) {}
+})();
+</script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guide &mdash; Andrew's Paper Library</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db;
+  --card-bg: #fbfaf8;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; }
+}
+:root[data-theme="light"] { --bg: #ffffff; --fg: #1a1a1a; --muted: #5b5b5b; --rule: #e3e0d8; --accent: #1a56db; --card-bg: #fbfaf8; }
+:root[data-theme="dark"] { --bg: #1e1e1e; --fg: #ece9e2; --muted: #a9a49a; --rule: #444444; --accent: #7fa7ff; --card-bg: #2a2a2a; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+}
+.wrap { max-width: 640px; margin: 0 auto; padding: 9vh 6vw 12vh; }
+.back-link {
+  display: inline-flex; align-items: center; gap: 0.4em; color: var(--muted); text-decoration: none;
+  font-size: 0.85em; margin-bottom: 2.5em;
+}
+.back-link:hover { color: var(--accent); }
+.back-link svg { display: block; }
+h1 { font-size: 1.6em; margin: 0 0 0.35em; }
+.lede { color: var(--muted); line-height: 1.6; margin: 0 0 2em; }
+h2 { font-size: 1.05em; margin: 1.8em 0 0.55em; }
+p, li { line-height: 1.65; font-size: 0.98em; }
+p { margin: 0 0 0.75em; }
+ul { margin: 0 0 0.75em; padding-left: 1.2em; }
+li { margin: 0.25em 0; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em; background: var(--card-bg); border: 1px solid var(--rule);
+  border-radius: 4px; padding: 0.1em 0.35em;
+}
+pre {
+  background: var(--card-bg); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 0.85em 1em; overflow-x: auto; margin: 0 0 1em; font-size: 0.88em; line-height: 1.5;
+}
+pre code { background: none; border: none; padding: 0; font-size: inherit; }
+table { width: 100%; border-collapse: collapse; margin: 0 0 1em; font-size: 0.92em; }
+th, td { text-align: left; padding: 0.45em 0.5em; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 0.85em; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="back-link" href="/">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    Back to library
+  </a>
+  <h1>Guide</h1>
+  <p class="lede">A local library for reading research papers as clean, reflowable HTML.</p>
+
+  <h2>Start</h2>
+  <pre><code>paper-reader --library</code></pre>
+  <p>Opens <code>http://127.0.0.1:8765</code>. Papers live in <code>~/.paper_reader_library</code>.</p>
+  <pre><code>paper-reader --stop-library
+paper-reader --rebuild-library</code></pre>
+
+  <h2>Add papers</h2>
+  <p>Use the <strong>+</strong> button (bottom-right), or drag a file onto the library page.</p>
+  <table>
+    <thead><tr><th>Format</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td><code>.tex</code> / <code>.zip</code> / <code>.tar.gz</code></td><td>LaTeX source (e.g. arXiv &ldquo;Other formats &rarr; Source&rdquo;)</td></tr>
+      <tr><td><code>.html</code> / <code>.htm</code></td><td>Saved publisher page (Save Page As &rarr; Webpage, Complete)</td></tr>
+      <tr><td><code>.pdf</code></td><td>Needs <a href="https://github.com/kermitt2/grobid">GROBID</a> running locally</td></tr>
+      <tr><td><code>.epub</code></td><td>Ebook &rarr; same reader format</td></tr>
+    </tbody>
+  </table>
+  <p>One-shot CLI (no library):</p>
+  <pre><code>paper-reader path/to/paper.tar.gz -o paper.html</code></pre>
+
+  <h2>Organize</h2>
+  <ul>
+    <li><strong>Tabs:</strong> Inbox &middot; Later &middot; Completed &middot; Archive &middot; Trash</li>
+    <li><strong>Pin</strong> papers for the sidebar; <strong>tags</strong> filter the list</li>
+    <li><strong>Search</strong> (<code>/</code> or sidebar) by title/author</li>
+    <li>Drag a card onto a tab (or Pinned) to move it</li>
+  </ul>
+
+  <h2>Read</h2>
+  <ul>
+    <li>Click text to highlight; add optional notes</li>
+    <li>Hover citations / figures / tables for previews</li>
+    <li>Theme, font size, and column width in the reader chrome</li>
+    <li>Highlights stay in browser <code>localStorage</code> (per paper)</li>
+  </ul>
+
+  <h2>Sync (optional)</h2>
+  <p>Preferences &rarr; paste a git remote &rarr; <strong>Setup</strong>, then <strong>Sync Now</strong> (or pull-to-refresh on the library) to backup/sync the library folder.</p>
+</div>
+</body>
+</html>
+"""
+
 PIPELINE_PAGE_HTML = """<!doctype html>
 <html lang="en">
 <head>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m16 6 4 14'/><path d='M12 6v14'/><path d='M8 8v12'/><path d='M4 4v16'/></svg>">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23c47a5a' d='M10 19h12l-1.4 9.2c-.1.8-.8 1.4-1.6 1.4h-6c-.8 0-1.5-.6-1.6-1.4L10 19z'/%3E%3Cellipse fill='%234a3728' cx='16' cy='19' rx='6.2' ry='2'/%3E%3Cpath fill='%233a6b4f' d='M16 19v-8' stroke='%233a6b4f' stroke-width='1.6' stroke-linecap='round'/%3E%3Cellipse fill='%234fa882' cx='11.5' cy='12' rx='4.2' ry='2.4' transform='rotate(-35 11.5 12)'/%3E%3Cellipse fill='%233d8b6e' cx='20.5' cy='11.5' rx='4.2' ry='2.4' transform='rotate(35 20.5 11.5)'/%3E%3Cellipse fill='%232f6f56' cx='16' cy='7.5' rx='3.2' ry='4.4'/%3E%3C/svg%3E">
 <script>
 (function () {
   try {
@@ -2664,6 +2950,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_html(HOME_PAGE_HTML.replace('</body>', get_palette_html('home') + '</body>'))
         elif parsed.path == "/about":
             self._send_html(ABOUT_PAGE_HTML)
+        elif parsed.path == "/guide":
+            self._send_html(GUIDE_PAGE_HTML)
         elif parsed.path == "/pipeline":
             from .palette import get_palette_html
             self._send_html(PIPELINE_PAGE_HTML.replace('</body>', get_palette_html('home') + '</body>'))
@@ -2823,7 +3111,7 @@ class Handler(BaseHTTPRequestHandler):
         filename = (qs.get("filename") or ["upload"])[0]
         if not filename.lower().endswith(ALLOWED_UPLOAD_SUFFIXES):
             self._send_json(
-                {"error": "unsupported file type -- use .tex, .zip, .tar.gz, .tgz, .tar, .html, or .pdf"}, 400
+                {"error": "unsupported file type -- use .tex, .zip, .tar.gz, .tgz, .tar, .html, .pdf, or .epub"}, 400
             )
             return
 
@@ -2838,7 +3126,7 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             entry = _process_upload(filename, data)
-        except (LatexConvertError, HtmlConvertError, PdfConvertError) as e:
+        except (LatexConvertError, HtmlConvertError, PdfConvertError, EpubConvertError) as e:
             self._send_json({"error": str(e)}, 400)
             return
         except Exception as e:  # keep the server alive even if one paper fails to convert

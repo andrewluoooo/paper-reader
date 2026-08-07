@@ -7,6 +7,8 @@ import sys
 import tempfile
 import time
 
+from .epub_convert import EpubConvertError
+from .epub_convert import convert as convert_epub
 from .html_convert import HtmlConvertError
 from .html_convert import convert as convert_html
 from .latex_convert import LatexConvertError, convert as convert_latex
@@ -16,6 +18,7 @@ from .restyle import restyle
 
 HTML_SOURCE_SUFFIXES = (".html", ".htm")
 PDF_SOURCE_SUFFIXES = (".pdf",)
+EPUB_SOURCE_SUFFIXES = (".epub",)
 
 
 def main(argv=None) -> int:
@@ -26,14 +29,14 @@ def main(argv=None) -> int:
             "either a LaTeX source (a .tex file, a project directory, or a source "
             "tarball/zip, e.g. an arXiv 'Other formats -> Source' download), an "
             "already-rendered HTML paper page saved from a publisher's site (browser "
-            "'Save Page As... Webpage, Complete'), or a plain .pdf (parsed via a local "
-            "GROBID service -- see README)."
+            "'Save Page As... Webpage, Complete'), a plain .pdf (parsed via a local "
+            "GROBID service -- see README), or an .epub ebook."
         ),
     )
     parser.add_argument(
         "source",
         nargs="?",
-        help="Path to a .tex file, LaTeX project directory, source archive, a saved .html paper page, or a .pdf",
+        help="Path to a .tex file, LaTeX project directory, source archive, a saved .html paper page, a .pdf, or an .epub",
     )
     parser.add_argument(
         "-o", "--output", help="Path to write the output HTML file (default: alongside the source)"
@@ -176,6 +179,7 @@ def main(argv=None) -> int:
 
     is_html_source = src.lower().endswith(HTML_SOURCE_SUFFIXES)
     is_pdf_source = src.lower().endswith(PDF_SOURCE_SUFFIXES)
+    is_epub_source = src.lower().endswith(EPUB_SOURCE_SUFFIXES)
 
     work_ctx = tempfile.TemporaryDirectory(prefix="paper_reader_")
     workdir = work_ctx.name
@@ -185,9 +189,11 @@ def main(argv=None) -> int:
                 raw_html_path = convert_html(src, workdir)
             elif is_pdf_source:
                 raw_html_path = convert_pdf(src, workdir)
+            elif is_epub_source:
+                raw_html_path = convert_epub(src, workdir)
             else:
                 raw_html_path = convert_latex(src, workdir)
-        except (LatexConvertError, HtmlConvertError, PdfConvertError) as e:
+        except (LatexConvertError, HtmlConvertError, PdfConvertError, EpubConvertError) as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
 

@@ -24,11 +24,14 @@ from pathlib import Path
 from typing import Optional
 
 from . import (
+    acronym_patch,
     algorithm2e_patch,
     glossaries_patch,
+    local_sty_patch,
     makecell_patch,
     siunitx_patch,
     tcolorbox_patch,
+    tikz_rasterize,
     xparse_patch,
 )
 
@@ -284,7 +287,10 @@ def convert(input_path: str, workdir: str) -> str:
     tcolorbox_patch.patch_source_tree(main_tex.parent)
     makecell_patch.patch_source_tree(main_tex.parent)
     glossaries_patch.patch_source_tree(main_tex.parent)
+    acronym_patch.patch_source_tree(main_tex.parent)
     xparse_patch.patch_source_tree(main_tex.parent)
+    local_sty_patch.patch_source_tree(main_tex.parent)
+    tikz_rasterize.patch_source_tree(main_tex.parent, main_tex)
 
     out_html = main_tex.with_name("paper.html")
     log_path = main_tex.with_name("latexml_run.log")
@@ -294,7 +300,16 @@ def convert(input_path: str, workdir: str) -> str:
     # fine conversion get cut off mid-way and silently produce an empty stub.
     relax_ltxml = main_tex.parent / "relax_errors.ltxml"
     relax_ltxml.write_text("package LaTeXML::Package::Pool;\nAssignValue(MAX_ERRORS => 10000, 'global');\n1;\n", encoding="utf-8")
-    cmd = ["latexmlc", f"--dest={out_html.name}", "--format=html5", "--timeout=1800", "--preload=relax_errors.ltxml", main_tex.name]
+    cmd = [
+        "latexmlc",
+        f"--dest={out_html.name}",
+        "--format=html5",
+        "--timeout=1800",
+        "--preload=relax_errors.ltxml",
+    ]
+    if (main_tex.parent / "pr_tikz_fallbacks.ltxml").is_file():
+        cmd.append("--preload=pr_tikz_fallbacks.ltxml")
+    cmd.append(main_tex.name)
     proc = subprocess.run(cmd, cwd=main_tex.parent, capture_output=True, text=True)
     log_path.write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
 
