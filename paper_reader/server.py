@@ -2042,10 +2042,13 @@ input[type=file] { display: none; }
       if (refreshing || Date.now() < cooldownUntil) return;
       if (e.target && e.target.closest && e.target.closest(".sidebar, .info-panel")) return;
       
+      var mainCol = document.querySelector(".main-col");
+      var currentScrollY = mainCol ? mainCol.scrollTop : 0;
+      
       if (momentumTimer) clearTimeout(momentumTimer);
       momentumTimer = setTimeout(function() { momentumBlock = false; }, 300);
       
-      if (window.scrollY > 0) {
+      if (currentScrollY > 0) {
         momentumBlock = true;
         if (pullAmount) cancelPull();
         return;
