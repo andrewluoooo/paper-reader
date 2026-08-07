@@ -903,7 +903,6 @@ input[type=file] { display: none; }
   <aside class="info-panel" id="infoPanel" hidden>
     <div class="info-panel-top">
       <span>Notes & Info</span>
-      <button type="button" class="icon-btn" id="infoCloseBtn" aria-label="Close info panel">&times;</button>
     </div>
     <div class="info-panel-body" id="infoPanelBody"></div>
   </aside>
@@ -2285,8 +2284,6 @@ input[type=file] { display: none; }
     tabs[3].innerHTML = ARCHIVE_ICON + "<span>Archive</span>";
     tabs[4].innerHTML = TRASH_ICON + "<span>Trash</span>";
   }
-  
-  document.getElementById("infoCloseBtn").innerHTML = X_ICON;
   document.getElementById("confirmCancelBtn").innerHTML = X_ICON + "<span>Cancel</span>";
   document.getElementById("confirmDeleteBtn").innerHTML = TRASH_ICON + "<span>Delete</span>";
 
