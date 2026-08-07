@@ -2261,11 +2261,12 @@ input[type=file] { display: none; }
   document.getElementById("navPrefsBtn").innerHTML = PREFS_ICON + '<span>Preferences</span> <span class="nav-item-sub" id="prefsThemeLabel">Auto</span>';
   
   var tabs = document.querySelectorAll(".tab-btn");
-  if (tabs.length >= 4) {
+  if (tabs.length >= 5) {
     tabs[0].innerHTML = INBOX_ICON + "<span>Inbox</span>";
     tabs[1].innerHTML = LATER_ICON + "<span>Later</span>";
-    tabs[2].innerHTML = ARCHIVE_ICON + "<span>Archive</span>";
-    tabs[3].innerHTML = TRASH_ICON + "<span>Trash</span>";
+    tabs[2].innerHTML = CHECK_ICON + "<span>Completed</span>";
+    tabs[3].innerHTML = ARCHIVE_ICON + "<span>Archive</span>";
+    tabs[4].innerHTML = TRASH_ICON + "<span>Trash</span>";
   }
   
   document.getElementById("infoCloseBtn").innerHTML = X_ICON;
