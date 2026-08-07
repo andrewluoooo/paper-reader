@@ -1976,6 +1976,8 @@ input[type=file] { display: none; }
     var releaseTimer = null;
     var hideTimer = null;
     var refreshing = false;
+    var momentumBlock = false;
+    var momentumTimer = null;
 
     function reveal() {
       if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -2039,10 +2041,17 @@ input[type=file] { display: none; }
     window.addEventListener("wheel", function (e) {
       if (refreshing || Date.now() < cooldownUntil) return;
       if (e.target && e.target.closest && e.target.closest(".sidebar, .info-panel")) return;
+      
+      if (momentumTimer) clearTimeout(momentumTimer);
+      momentumTimer = setTimeout(function() { momentumBlock = false; }, 300);
+      
       if (window.scrollY > 0) {
+        momentumBlock = true;
         if (pullAmount) cancelPull();
         return;
       }
+      if (momentumBlock) return;
+      
       if (e.deltaY < 0) {
         pullAmount += -e.deltaY;
         updatePullUI(pullAmount);
