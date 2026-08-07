@@ -1,0 +1,7 @@
+package LaTeXML::Package::Pool;
+use strict;
+use warnings;
+use LaTeXML::Package;
+
+AssignValue(MAX_ERRORS => 10000, 'global');
+1;

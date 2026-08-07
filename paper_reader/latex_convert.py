@@ -292,7 +292,9 @@ def convert(input_path: str, workdir: str) -> str:
     # latexmlc's own default timeout (600s) is too tight for long papers with
     # many figures/citations -- raise it rather than have a real, otherwise
     # fine conversion get cut off mid-way and silently produce an empty stub.
-    cmd = ["latexmlc", f"--dest={out_html.name}", "--format=html5", "--timeout=1800", main_tex.name]
+    relax_ltxml = main_tex.parent / "relax_errors.ltxml"
+    relax_ltxml.write_text("package LaTeXML::Package::Pool;\nAssignValue(MAX_ERRORS => 10000, 'global');\n1;\n", encoding="utf-8")
+    cmd = ["latexmlc", f"--dest={out_html.name}", "--format=html5", "--timeout=1800", "--preload=relax_errors.ltxml", main_tex.name]
     proc = subprocess.run(cmd, cwd=main_tex.parent, capture_output=True, text=True)
     log_path.write_text((proc.stdout or "") + "\n" + (proc.stderr or ""), encoding="utf-8")
 
