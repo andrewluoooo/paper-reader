@@ -412,6 +412,11 @@ html.library-sidebar-collapsed .sidebar {
 }
 .nav-tags { display: flex; flex-direction: column; gap: 0.05em; overflow-y: auto; min-height: 0; }
 .nav-tags-empty { padding: 0.4em 0.6em; font-size: 0.82em; color: var(--muted); }
+
+.collapse-icon { transition: transform 0.2s ease; opacity: 0.5; }
+.nav-section-label:hover .collapse-icon { opacity: 1; }
+.nav-section-label.collapsed .collapse-icon { transform: rotate(-90deg); }
+
 .nav-tag-item {
   display: flex; align-items: center; gap: 0.4em; width: 100%; text-align: left; background: none; border: none; cursor: pointer;
   padding: 0.4em 0.6em; border-radius: 7px; font-size: 0.85em; color: var(--muted);
@@ -822,9 +827,9 @@ input[type=file] { display: none; }
     </div>
     <nav class="sidebar-nav">
       <button type="button" class="nav-item" id="navHome">Home</button>
-      <div class="nav-section-label" id="navPinnedLabel" hidden>Pinned</div>
+      <div class="nav-section-label" id="navPinnedLabel" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; user-select:none;" hidden>Pinned <svg class="collapse-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></div>
       <div class="nav-tags" id="navPinned" hidden></div>
-      <div class="nav-section-label">Tags</div>
+      <div class="nav-section-label" id="navTagsLabel" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; user-select:none;">Tags <svg class="collapse-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg></div>
       <div class="nav-tags" id="navTags"></div>
     </nav>
     <div class="sidebar-bottom">
