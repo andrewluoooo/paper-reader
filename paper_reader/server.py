@@ -2191,11 +2191,6 @@ input[type=file] { display: none; }
     searchBox.value = "";
     render("");
   });
-
-  document.getElementById("infoCloseBtn").addEventListener("click", function () {
-    closeInfoPanel();
-    render(document.getElementById("searchBox").value);
-  });
   document.addEventListener("keydown", function (e) {
     if (!confirmOverlay.hidden) {
       if (e.key === "Escape") closeConfirmDialog();
